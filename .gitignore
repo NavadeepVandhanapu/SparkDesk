@@ -1,0 +1,33 @@
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+agent/.venv/
+
+# Python caches and compiled bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime logs and temporary data
+data/*.log
+data/*.token
+data/*.tmp
+!data/.gitkeep
+
+# IDE and OS metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
