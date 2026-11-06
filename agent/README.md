@@ -11,16 +11,23 @@ SparkDesk/
 ├── agent/
 │   ├── .venv/                      # Python 3.13 Virtual Environment
 │   ├── pyproject.toml              # Build & dependency declarations
-│   ├── requirements.txt            # Pinned / direct dependencies (FastAPI, Uvicorn, Pydantic)
+│   ├── requirements.txt            # Pinned dependencies (FastAPI, Uvicorn, Pydantic, HTTPX, Pytest)
 │   ├── README.md                   # This documentation file
-│   ├── run_agent.py                # Agent runner entrypoint
+│   ├── run_agent.py                # Server runner entrypoint
+│   ├── tests/                      # Automated test suite
+│   │   ├── test_server.py          # Pytest suite for FastAPI application
+│   │   └── verify_live_server.py   # Live socket integration verification script
 │   └── sparkdesk_agent/            # Core package
 │       ├── __init__.py
-│       ├── __main__.py             # Executable module entrypoint
-│       └── core/
+│       ├── __main__.py             # Executable module entrypoint (`python -m sparkdesk_agent`)
+│       ├── core/
 │           ├── __init__.py
 │           ├── config.py           # Centralized configuration & settings.ini loader
 │           └── logging.py          # Centralized rotating logger (syncs to data/sparkdesk.log)
+│       └── ipc/
+│           ├── __init__.py
+│           ├── protocol.py         # IPC and health check Pydantic schemas
+│           └── server.py           # FastAPI application and Uvicorn server
 ├── config/
 │   └── settings.ini                # Shared AutoHotkey + Agent configuration
 ├── data/
@@ -50,56 +57,18 @@ python3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-*(If script execution is restricted in PowerShell, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` first).*
-
 ### 2. Install Dependencies
 
 ```powershell
 pip install -r requirements.txt
+pip install -e .
 ```
 
-Installed packages include:
-- `fastapi`: Modern, high-performance web framework for the IPC API.
-- `uvicorn[standard]`: ASGI server for hosting the local agent service.
-- `pydantic`: Data validation and settings management.
-- `pydantic-settings`: Strongly-typed configuration with environment variable support.
-
 ---
 
-## Shared Configuration
+## Running the Server
 
-The agent reads configuration from the existing `config/settings.ini` without modifying it:
-
-```ini
-[General]
-ShowStartupNotification=true
-
-; Optional agent overrides can be placed here:
-[Agent]
-Host=127.0.0.1
-Port=8765
-Debug=false
-LogLevel=INFO
-```
-
-You can also override any setting using environment variables with the `SPARKDESK_AGENT_` prefix (e.g., `SPARKDESK_AGENT_PORT=8800`).
-
----
-
-## Logging
-
-Logs are formatted consistently with SparkDesk's AutoHotkey logger:
-`YYYY-MM-DD HH:MM:SS [LEVEL] [LOGGER] Message`
-
-Logs are output to:
-1. Console (`stdout`)
-2. Rotating file handler at `data/sparkdesk.log` (5 MB per file, 3 backups, UTF-8 encoded).
-
----
-
-## Verification
-
-To verify that the configuration and logging are working properly:
+Start the local agent server with:
 
 ```powershell
 .\.venv\Scripts\python.exe run_agent.py
@@ -109,3 +78,42 @@ or
 .\.venv\Scripts\python.exe -m sparkdesk_agent
 ```
 
+CLI Options:
+- `--host`: Override binding host (default: `127.0.0.1` from `settings.ini`)
+- `--port`: Override binding port (default: `8765` from `settings.ini`)
+- `--debug`: Enable debug log level
+
+---
+
+## Endpoints (Phase 2)
+
+### `GET /health`
+Returns the operational health, uptime, process ID, and Python runtime version.
+
+**Response Example:**
+```json
+{
+  "status": "ok",
+  "agent_name": "SparkDesk Local Agent",
+  "version": "0.1.0",
+  "python_version": "3.13.14",
+  "uptime_seconds": 12.34,
+  "pid": 30644,
+  "environment": "development",
+  "timestamp": "2026-11-06T14:19:02.150567+00:00"
+}
+```
+
+---
+
+## Running Tests
+
+Run the unit test suite:
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_server.py -v
+```
+
+Run the live server loopback verification:
+```powershell
+.\.venv\Scripts\python.exe tests/verify_live_server.py
+```
