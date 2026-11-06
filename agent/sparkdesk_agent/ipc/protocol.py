@@ -23,3 +23,4 @@ class HealthResponse(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
         description="UTC timestamp of the health check",
     )
+

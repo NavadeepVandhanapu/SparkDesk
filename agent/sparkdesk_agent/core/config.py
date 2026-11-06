@@ -1,22 +1,22 @@
 """Centralized configuration loader for SparkDesk Local Agent.
 
 Reads shared configuration from the existing SparkDesk `config/settings.ini`,
-respects environment variable overrides, and provides strongly-typed Pydantic settings.
+respects environment variable overrides, and enforces security constraints (loopback-only binding).
 """
 
 from configparser import ConfigParser
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ALLOWED_LOOPBACK_HOSTS: Set[str] = {"127.0.0.1", "localhost"}
 
 
 def get_project_root() -> Path:
     """Return the SparkDesk project root directory."""
-    # File is at: SparkDesk/agent/sparkdesk_agent/core/config.py
-    # parents: [core, sparkdesk_agent, agent, SparkDesk]
     return Path(__file__).resolve().parents[3]
 
 
@@ -35,7 +35,7 @@ class AgentSettings(BaseSettings):
     environment: str = "development"
     debug: bool = False
 
-    # Server / IPC Binding
+    # Server / IPC Binding (Enforced loopback only)
     host: str = "127.0.0.1"
     port: int = 8765
 
@@ -47,6 +47,18 @@ class AgentSettings(BaseSettings):
     # Shared settings loaded from config/settings.ini
     show_startup_notification: bool = True
     log_level: str = "INFO"
+
+    @field_validator("host")
+    @classmethod
+    def validate_loopback_host(cls, v: str) -> str:
+        """Enforce strict loopback-only binding."""
+        normalized = v.strip().lower()
+        if normalized not in ALLOWED_LOOPBACK_HOSTS:
+            raise ValueError(
+                f"Security violation: SparkDesk Local Agent only permits loopback binding "
+                f"('127.0.0.1' or 'localhost'). Rejected host: '{v}'"
+            )
+        return normalized
 
     @classmethod
     def load_from_ini(cls) -> "AgentSettings":
@@ -65,19 +77,16 @@ class AgentSettings(BaseSettings):
             parser = ConfigParser()
             try:
                 parser.read(ini_path, encoding="utf-8")
-                # Read from [General]
                 if parser.has_section("General"):
                     show_notification = parser.getboolean(
                         "General", "ShowStartupNotification", fallback=True
                     )
-                # Read optional [Agent] overrides if configured in settings.ini
                 if parser.has_section("Agent"):
                     host = parser.get("Agent", "Host", fallback=host)
                     port = parser.getint("Agent", "Port", fallback=port)
                     debug = parser.getboolean("Agent", "Debug", fallback=debug)
                     log_level = parser.get("Agent", "LogLevel", fallback=log_level)
             except Exception:
-                # Graceful fallback to default values if INI parsing has issues
                 pass
 
         return cls(
@@ -96,4 +105,3 @@ class AgentSettings(BaseSettings):
 def get_settings() -> AgentSettings:
     """Return a cached singleton instance of AgentSettings."""
     return AgentSettings.load_from_ini()
-

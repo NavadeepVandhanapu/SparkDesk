@@ -1,15 +1,16 @@
 """FastAPI Application and Uvicorn Server for SparkDesk Local Agent."""
 
+import asyncio
 import os
 import platform
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import uvicorn
 
-from sparkdesk_agent.core.config import AgentSettings, get_settings
+from sparkdesk_agent.core.config import ALLOWED_LOOPBACK_HOSTS, AgentSettings, get_settings
 from sparkdesk_agent.core.logging import get_logger, setup_logging
 from sparkdesk_agent.ipc.protocol import HealthResponse
 
@@ -51,6 +52,7 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.server = None
 
     @app.get(
         "/health",
@@ -71,6 +73,31 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
             environment=settings.environment,
         )
 
+    @app.post(
+        "/shutdown",
+        summary="Graceful Shutdown",
+        tags=["System"],
+    )
+    async def trigger_shutdown() -> dict:
+        """Gracefully request the local agent server to shut down."""
+        logger = get_logger("sparkdesk_agent.server")
+        logger.info("Graceful shutdown requested via /shutdown endpoint.")
+
+        async def _initiate_shutdown() -> None:
+            # Yield control briefly so the HTTP response is dispatched to the client
+            await asyncio.sleep(0.15)
+            server_inst = getattr(app.state, "server", None)
+            if server_inst is not None:
+                server_inst.should_exit = True
+            else:
+                logger.warning("No active uvicorn server reference registered on app.state.")
+
+        asyncio.create_task(_initiate_shutdown())
+        return {
+            "status": "shutting_down",
+            "message": "SparkDesk Local Agent is shutting down cleanly.",
+        }
+
     @app.get("/", include_in_schema=False)
     async def root_redirect() -> dict:
         """Simple root probe indicating service is ready."""
@@ -85,20 +112,25 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
 
 
 def start_server(settings: Optional[AgentSettings] = None) -> None:
-    """Start the Uvicorn ASGI server with SparkDesk configuration."""
+    """Start the Uvicorn ASGI server with SparkDesk configuration.
+
+    Enforces loopback-only binding ('127.0.0.1' or 'localhost').
+    Rejects any external or wildcard host.
+    """
     if settings is None:
         settings = get_settings()
+
+    # Hard security check: enforce loopback only
+    normalized_host = settings.host.strip().lower()
+    if normalized_host not in ALLOWED_LOOPBACK_HOSTS:
+        raise ValueError(
+            f"Security violation: SparkDesk Local Agent rejects non-loopback host '{settings.host}'. "
+            f"Allowed hosts: {sorted(ALLOWED_LOOPBACK_HOSTS)}"
+        )
 
     # Ensure centralized logging is initialized
     setup_logging(settings)
     logger = get_logger("sparkdesk_agent.server")
-
-    # Safety check: bind strictly to localhost by default
-    if settings.host not in ("127.0.0.1", "localhost"):
-        logger.warning(
-            "Security notice: Host is set to '%s'. Local agent is recommended to bind to 127.0.0.1.",
-            settings.host,
-        )
 
     app = create_app(settings)
 
@@ -114,10 +146,13 @@ def start_server(settings: Optional[AgentSettings] = None) -> None:
         uvicorn_log_level,
     )
 
-    uvicorn.run(
-        app,
-        host=settings.host,
+    config = uvicorn.Config(
+        app=app,
+        host=normalized_host,
         port=settings.port,
         log_level=uvicorn_log_level,
         access_log=settings.debug,
     )
+    server = uvicorn.Server(config)
+    app.state.server = server
+    server.run()
