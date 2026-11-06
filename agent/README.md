@@ -85,7 +85,7 @@ CLI Options:
 
 ---
 
-## Endpoints (Phase 2 & 3)
+## Endpoints (Phase 2, 3 & 4)
 
 ### `GET /health`
 Returns the operational health, uptime, process ID, and Python runtime version (unauthenticated loopback probe).
@@ -93,6 +93,14 @@ Returns the operational health, uptime, process ID, and Python runtime version (
 ### `GET /ipc/ping`
 Authenticated IPC heartbeat endpoint used by AutoHotkey's `AgentBridge.ahk`. Requires `X-SparkDesk-Token` header.
 Returns: `{"status": "pong", "agent": "...", "version": "...", "timestamp": "..."}`.
+
+### `GET /ipc/tools`
+Authenticated endpoint listing all explicitly registered, allow-listed tools and their parameter schemas.
+
+### `POST /ipc/execute`
+Authenticated tool execution endpoint. Requires `X-SparkDesk-Token` header.
+Payload: `{"tool": "get_system_info", "parameters": {}}`.
+Executes explicitly registered tools (e.g. `get_system_info`) and returns structured JSON metrics. Rejects unlisted tools (404) and invalid parameters (422).
 
 ### `POST /shutdown`
 Protected graceful shutdown endpoint. Requires `X-SparkDesk-Token` header.

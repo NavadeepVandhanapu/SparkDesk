@@ -1,9 +1,10 @@
 #Requires AutoHotkey v2.0
 
 ; ==============================================================================
-; SparkDesk AgentBridge (Phase 3)
+; SparkDesk AgentBridge (Phase 3 & 4)
 ; Provides authenticated HTTP communication between AutoHotkey and the
 ; Python Local Agent via WinHttp.WinHttpRequest.5.1 on 127.0.0.1.
+; Includes Tool Execution (AgentExecute) and System Information GUI.
 ; ==============================================================================
 
 InitAgentBridge() {
@@ -19,6 +20,8 @@ InitAgentBridge() {
         SD["AgentToken"] := ""
     if !SD.Has("AgentPID")
         SD["AgentPID"] := 0
+    if !SD.Has("SysInfoGui")
+        SD["SysInfoGui"] := 0
 
     ; Read optional overrides from config/settings.ini
     if FileExist(SD["ConfigPath"]) {
@@ -135,4 +138,295 @@ AgentShutdown(customToken := "") {
         LogError("AgentShutdown: Failed (" result["error"] ")")
     }
     return result
+}
+
+; ------------------------------------------------------------------------------
+; Phase 4: Authenticated Tool Execution
+; ------------------------------------------------------------------------------
+
+AgentExecute(toolName, parameters := "", customToken := "", timeoutMs := 4000) {
+    if (parameters == "" || parameters == "{}" || Type(parameters) != "String")
+        payload := '{"tool": "' toolName '", "parameters": {}}'
+    else
+        payload := '{"tool": "' toolName '", "parameters": ' parameters '}'
+
+    result := SendAgentRequest("POST", "/ipc/execute", payload, customToken, timeoutMs)
+
+    if (result["ok"]) {
+        LogInfo("AgentExecute '" toolName "': Success (HTTP " result["status"] ")")
+        try {
+            result["data"] := SimpleJsonParse(result["response"])
+        } catch {
+            result["data"] := Map()
+        }
+    } else {
+        LogError("AgentExecute '" toolName "': Failed (" result["error"] ")")
+    }
+    return result
+}
+
+; ------------------------------------------------------------------------------
+; System Information GUI (Displaying results in native SparkDesk UI)
+; ------------------------------------------------------------------------------
+
+ShowSystemInfoGui() {
+    global SD
+
+    if IsObject(SD["SysInfoGui"]) {
+        try SD["SysInfoGui"].Destroy()
+    }
+
+    infoGui := Gui("+Resize +MinSize640x520", "SparkDesk - System Information")
+    infoGui.BackColor := "111318"
+    infoGui.SetFont("s10", "Segoe UI")
+
+    ; Title Header
+    infoGui.SetFont("s18 bold cF3F4F6", "Segoe UI")
+    infoGui.AddText("x26 y20 w450 h32", "System Diagnostics")
+
+    infoGui.SetFont("s9 c9CA3AF", "Segoe UI")
+    infoGui.AddText("x28 y54 w400 h20", "LIVE METRICS VIA PYTHON LOCAL AGENT")
+
+    statusLabel := infoGui.AddText("x460 y26 w150 h22 Right c86EFAC", "● AGENT CONNECTED")
+
+    ; Fetch system information from agent
+    res := AgentExecute("get_system_info")
+
+    if (!res["ok"]) {
+        statusLabel.Text := "● AGENT OFFLINE"
+        statusLabel.SetFont("cEF4444")
+
+        infoGui.SetFont("s11 bold cF87171", "Segoe UI")
+        infoGui.AddText("x28 y100 w580 h30", "Could not retrieve system metrics.")
+
+        infoGui.SetFont("s9 cD1D5DB", "Segoe UI")
+        infoGui.AddText("x28 y135 w580 h60", "Error Details: " res["error"] "`n`nEnsure the SparkDesk Python agent is running on 127.0.0.1.")
+
+        retryBtn := infoGui.AddButton("x28 y210 w120 h30", "Retry")
+        retryBtn.OnEvent("Click", (*) => ShowSystemInfoGui())
+
+        closeBtn := infoGui.AddButton("x160 y210 w100 h30", "Close")
+        closeBtn.OnEvent("Click", (*) => infoGui.Destroy())
+
+        SD["SysInfoGui"] := infoGui
+        infoGui.Show("w640 h320 Center")
+        return
+    }
+
+    data := res["data"]
+    resMap := data.Has("result") ? data["result"] : Map()
+
+    ; Extract sections with defaults
+    osMap := resMap.Has("os") ? resMap["os"] : Map()
+    cpuMap := resMap.Has("cpu") ? resMap["cpu"] : Map()
+    memMap := resMap.Has("memory") ? resMap["memory"] : Map()
+    diskMap := resMap.Has("disk") ? resMap["disk"] : Map()
+    upMap := resMap.Has("uptime") ? resMap["uptime"] : Map()
+
+    ; 1. OS Card
+    AddMetricCard(infoGui, 26, 90, 588, 70, "OPERATING SYSTEM",
+        (osMap.Has("platform") ? osMap["platform"] : "Windows") . " (" . (osMap.Has("architecture") ? osMap["architecture"] : "64bit") . ")",
+        "Kernel Version: " . (osMap.Has("version") ? osMap["version"] : "Unknown"))
+
+    ; 2. CPU Card
+    cpuUsage := cpuMap.Has("usage_percent") ? cpuMap["usage_percent"] : 0
+    cores := cpuMap.Has("logical_cores") ? cpuMap["logical_cores"] : 1
+    AddMetricCard(infoGui, 26, 170, 288, 76, "CPU METRICS",
+        cpuUsage . "% Utilization",
+        cores . " Logical Cores  •  " . (cpuMap.Has("processor") ? SubStr(cpuMap["processor"], 1, 32) : "CPU"))
+
+    ; 3. Memory Card
+    memUsage := memMap.Has("usage_percent") ? memMap["usage_percent"] : 0
+    memUsed := memMap.Has("used_gb") ? memMap["used_gb"] : 0
+    memTotal := memMap.Has("total_gb") ? memMap["total_gb"] : 0
+    memAvail := memMap.Has("available_gb") ? memMap["available_gb"] : 0
+    AddMetricCard(infoGui, 326, 170, 288, 76, "MEMORY (RAM)",
+        memUsed . " GB / " . memTotal . " GB (" . memUsage . "%)",
+        memAvail . " GB Available")
+
+    ; 4. Disk Card
+    diskUsage := diskMap.Has("usage_percent") ? diskMap["usage_percent"] : 0
+    diskUsed := diskMap.Has("used_gb") ? diskMap["used_gb"] : 0
+    diskTotal := diskMap.Has("total_gb") ? diskMap["total_gb"] : 0
+    diskFree := diskMap.Has("free_gb") ? diskMap["free_gb"] : 0
+    diskDrive := diskMap.Has("drive") ? diskMap["drive"] : "C:\"
+    AddMetricCard(infoGui, 26, 256, 288, 76, "PRIMARY STORAGE (" . diskDrive . ")",
+        diskUsed . " GB / " . diskTotal . " GB (" . diskUsage . "%)",
+        diskFree . " GB Free Space")
+
+    ; 5. Uptime Card
+    uptimeStr := upMap.Has("uptime_formatted") ? upMap["uptime_formatted"] : "Unknown"
+    bootTime := upMap.Has("boot_time") ? SubStr(upMap["boot_time"], 1, 19) : "Unknown"
+    AddMetricCard(infoGui, 326, 256, 288, 76, "SYSTEM UPTIME",
+        uptimeStr,
+        "Boot Time (UTC): " . bootTime)
+
+    ; Bottom action buttons
+    refreshBtn := infoGui.AddButton("x26 y350 w120 h32", "Refresh")
+    refreshBtn.OnEvent("Click", (*) => ShowSystemInfoGui())
+
+    closeBtn := infoGui.AddButton("x156 y350 w100 h32", "Close")
+    closeBtn.OnEvent("Click", (*) => infoGui.Destroy())
+
+    infoGui.OnEvent("Close", (*) => (SD["SysInfoGui"] := 0))
+    SD["SysInfoGui"] := infoGui
+    infoGui.Show("w640 h410 Center")
+}
+
+AddMetricCard(guiObj, x, y, w, h, headerText, primaryText, subText) {
+    guiObj.AddText("x" x " y" y " w" w " h" h " Background20242D Border", "")
+
+    guiObj.SetFont("s8 bold c9CA3AF", "Segoe UI")
+    guiObj.AddText("x" (x + 12) " y" (y + 8) " w" (w - 24) " h16", headerText)
+
+    guiObj.SetFont("s11 bold cF9FAFB", "Segoe UI")
+    guiObj.AddText("x" (x + 12) " y" (y + 26) " w" (w - 24) " h22", primaryText)
+
+    guiObj.SetFont("s8 cD1D5DB", "Segoe UI")
+    guiObj.AddText("x" (x + 12) " y" (y + 50) " w" (w - 24) " h18", subText)
+}
+
+; ------------------------------------------------------------------------------
+; Lightweight Robust JSON Parser for AutoHotkey v2
+; ------------------------------------------------------------------------------
+
+SimpleJsonParse(str) {
+    str := Trim(str)
+    pos := 1
+    return _JsonParseValue(str, &pos)
+}
+
+_JsonSkipWhitespace(str, &pos) {
+    while (pos <= StrLen(str) && InStr(" `t`r`n", SubStr(str, pos, 1)))
+        pos++
+}
+
+_JsonParseValue(str, &pos) {
+    _JsonSkipWhitespace(str, &pos)
+    if (pos > StrLen(str))
+        return ""
+
+    char := SubStr(str, pos, 1)
+
+    if (char = "{")
+        return _JsonParseObject(str, &pos)
+    if (char = "[")
+        return _JsonParseArray(str, &pos)
+    if (char = '"')
+        return _JsonParseString(str, &pos)
+    if (InStr("-0123456789.", char))
+        return _JsonParseNumber(str, &pos)
+    if (SubStr(str, pos, 4) = "true") {
+        pos += 4
+        return true
+    }
+    if (SubStr(str, pos, 5) = "false") {
+        pos += 5
+        return false
+    }
+    if (SubStr(str, pos, 4) = "null") {
+        pos += 4
+        return ""
+    }
+    return ""
+}
+
+_JsonParseObject(str, &pos) {
+    obj := Map()
+    pos++ ; Skip '{'
+
+    loop {
+        _JsonSkipWhitespace(str, &pos)
+        if (pos > StrLen(str) || SubStr(str, pos, 1) = "}") {
+            pos++
+            break
+        }
+
+        if (SubStr(str, pos, 1) != '"')
+            break
+
+        key := _JsonParseString(str, &pos)
+        _JsonSkipWhitespace(str, &pos)
+
+        if (SubStr(str, pos, 1) = ":")
+            pos++
+
+        val := _JsonParseValue(str, &pos)
+        obj[key] := val
+
+        _JsonSkipWhitespace(str, &pos)
+        if (SubStr(str, pos, 1) = ",")
+            pos++
+        else if (SubStr(str, pos, 1) = "}") {
+            pos++
+            break
+        }
+    }
+    return obj
+}
+
+_JsonParseArray(str, &pos) {
+    arr := []
+    pos++ ; Skip '['
+
+    loop {
+        _JsonSkipWhitespace(str, &pos)
+        if (pos > StrLen(str) || SubStr(str, pos, 1) = "]") {
+            pos++
+            break
+        }
+
+        val := _JsonParseValue(str, &pos)
+        arr.Push(val)
+
+        _JsonSkipWhitespace(str, &pos)
+        if (SubStr(str, pos, 1) = ",")
+            pos++
+        else if (SubStr(str, pos, 1) = "]") {
+            pos++
+            break
+        }
+    }
+    return arr
+}
+
+_JsonParseString(str, &pos) {
+    pos++ ; Skip opening '"'
+    start := pos
+    out := ""
+
+    while (pos <= StrLen(str)) {
+        char := SubStr(str, pos, 1)
+        if (char = "\") {
+            out .= SubStr(str, start, pos - start)
+            pos++
+            nextChar := SubStr(str, pos, 1)
+            switch nextChar {
+                case '"', "\", "/": out .= nextChar
+                case "b": out .= "`b"
+                case "f": out .= "`f"
+                case "n": out .= "`n"
+                case "r": out .= "`r"
+                case "t": out .= "`t"
+                default: out .= nextChar
+            }
+            pos++
+            start := pos
+        } else if (char = '"') {
+            out .= SubStr(str, start, pos - start)
+            pos++
+            return out
+        } else {
+            pos++
+        }
+    }
+    return out
+}
+
+_JsonParseNumber(str, &pos) {
+    start := pos
+    while (pos <= StrLen(str) && InStr("-+0123456789.eE", SubStr(str, pos, 1)))
+        pos++
+    numStr := SubStr(str, start, pos - start)
+    return InStr(numStr, ".") ? Float(numStr) : Integer(numStr)
 }

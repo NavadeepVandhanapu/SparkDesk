@@ -88,4 +88,6 @@ AddAutomationCard(guiObj, x, y, title, description, shortcut, action) {
         button.OnEvent("Click", (*) => RunUbuntuServer())
     else if (action = "coding")
         button.OnEvent("Click", (*) => SetMode("Coding"))
+    else if (action = "sysinfo")
+        button.OnEvent("Click", (*) => ShowSystemInfoGui())
 }

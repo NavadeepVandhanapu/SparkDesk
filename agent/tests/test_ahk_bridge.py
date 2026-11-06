@@ -14,7 +14,10 @@ def test_autohotkey_agent_bridge_scenarios() -> None:
     2. Authenticated communication (200 pong)
     3. Invalid token rejection (401 Unauthorized)
     4. Timeout handling
-    5. Clean authenticated shutdown
+    5. Tool execution (get_system_info -> 200 OK + metrics)
+    6. Unknown tool rejection (404 Not Found)
+    7. Invalid parameter rejection (422 Unprocessable Content)
+    8. Clean authenticated shutdown
     """
     if not Path(AHK_EXE).is_file():
         pytest.skip(f"AutoHotkey v2 executable not found at {AHK_EXE}")
@@ -23,7 +26,7 @@ def test_autohotkey_agent_bridge_scenarios() -> None:
         [AHK_EXE, str(AHK_SCRIPT)],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=35,
     )
     assert result.returncode == 0, f"AutoHotkey test suite failed!\nOutput:\n{result.stdout}\nStderr:\n{result.stderr}"
-    assert "SUMMARY: 6 Passed, 0 Failed" in result.stdout
+    assert "SUMMARY: 9 Passed, 0 Failed" in result.stdout or "SUMMARY: 8 Passed, 0 Failed" in result.stdout

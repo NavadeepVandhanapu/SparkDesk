@@ -70,6 +70,7 @@ BuildTrayMenu() {
     A_TrayMenu.Add("Mode: Exam", (*) => SetMode("Exam"))
     A_TrayMenu.Add("Mode: Chill", (*) => SetMode("Chill"))
     A_TrayMenu.Add()
+    A_TrayMenu.Add("System Information", (*) => ShowSystemInfoGui())
     A_TrayMenu.Add("Test Agent Ping", (*) => PingAgentTrayHandler())
     A_TrayMenu.Add("Open data folder", (*) => Run(A_ScriptDir "\data"))
     A_TrayMenu.Add("Reload SparkDesk", (*) => Reload())

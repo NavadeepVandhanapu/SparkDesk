@@ -2,13 +2,16 @@
 #SingleInstance Force
 
 ; ==============================================================================
-; TestAgentBridge.ahk - Phase 3 Verification Suite
+; TestAgentBridge.ahk - Phase 3 & 4 Verification Suite
 ; Tests:
 ; 1. Unavailable-server scenario
 ; 2. Authenticated communication (valid token -> 200 pong)
 ; 3. Invalid token rejection (invalid token -> 401 Unauthorized)
 ; 4. Timeout handling
-; 5. Clean authenticated shutdown
+; 5. Phase 4: Authenticated Tool Execution (get_system_info -> 200 OK + metrics)
+; 6. Phase 4: Unknown tool rejection (404 Not Found)
+; 7. Phase 4: Invalid parameters rejection (422 Unprocessable Content)
+; 8. Clean authenticated shutdown (200 OK + clean exit)
 ; ==============================================================================
 
 rootDir := SubStr(A_ScriptDir, 1, InStr(A_ScriptDir, "\", , -1) - 1)
@@ -30,6 +33,7 @@ SD["AgentHost"] := "127.0.0.1"
 SD["AgentPort"] := 8765
 SD["AgentTokenPath"] := rootDir "\data\session.token"
 SD["AgentToken"] := ""
+SD["SysInfoGui"] := 0
 
 LogInfo(msg) {
     Output(FormatTime(, "yyyy-MM-dd HH:mm:ss") " [TEST] " msg "`n")
@@ -44,7 +48,7 @@ LogError(msg) {
 
 RunTests() {
     Output("=======================================================`n")
-    Output("Starting Phase 3 AutoHotkey AgentBridge Verification`n")
+    Output("Starting Phase 4 AutoHotkey AgentBridge Verification`n")
     Output("=======================================================`n`n")
 
     passCount := 0
@@ -104,7 +108,6 @@ RunTests() {
     res2 := AgentPing()
     if (res2["ok"] && res2["status"] == 200 && InStr(res2["response"], "pong")) {
         Output("  PASS: AgentPing returned HTTP 200 with pong payload.`n")
-        Output("  Response: " res2["response"] "`n`n")
         passCount++
     } else {
         Output("  FAIL: AgentPing failed! Status: " res2["status"] " Error: " res2["error"] "`n`n")
@@ -133,15 +136,68 @@ RunTests() {
     passCount++
 
     ; --------------------------------------------------------------------------
-    ; Scenario 5: Authenticated graceful shutdown
+    ; Scenario 5: Phase 4 Tool Execution (get_system_info)
     ; --------------------------------------------------------------------------
-    Output("[SCENARIO 5] Testing authenticated shutdown...`n")
-    res5 := AgentShutdown()
+    Output("[SCENARIO 5] Testing authenticated tool execution (get_system_info)...`n")
+    res5 := AgentExecute("get_system_info")
     if (res5["ok"] && res5["status"] == 200) {
+        data := res5["data"]
+        resultMap := data.Has("result") ? data["result"] : Map()
+        memMap := resultMap.Has("memory") ? resultMap["memory"] : Map()
+        cpuMap := resultMap.Has("cpu") ? resultMap["cpu"] : Map()
+        osMap := resultMap.Has("os") ? resultMap["os"] : Map()
+
+        if (resultMap.Has("memory") && resultMap.Has("cpu") && resultMap.Has("disk") && resultMap.Has("uptime")) {
+            Output("  PASS: get_system_info returned valid metrics structure.`n")
+            Output("  OS: " (osMap.Has("platform") ? osMap["platform"] : "Windows") "`n")
+            Output("  CPU: " (cpuMap.Has("logical_cores") ? cpuMap["logical_cores"] : 0) " cores, " (cpuMap.Has("usage_percent") ? cpuMap["usage_percent"] : 0) "% utilization`n")
+            Output("  Memory: " (memMap.Has("total_gb") ? memMap["total_gb"] : 0) " GB total, " (memMap.Has("available_gb") ? memMap["available_gb"] : 0) " GB available`n`n")
+            passCount++
+        } else {
+            Output("  FAIL: Metrics structure missing expected keys.`n`n")
+            failCount++
+        }
+    } else {
+        Output("  FAIL: AgentExecute get_system_info failed with status " res5["status"] " Error: " res5["error"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 6: Phase 4 Unknown tool rejection
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 6] Testing unknown tool rejection (security check)...`n")
+    res6 := AgentExecute("malicious_arbitrary_cmd_xyz")
+    if (!res6["ok"] && res6["status"] == 404) {
+        Output("  PASS: Unknown tool correctly rejected with HTTP 404 Not Found.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Expected HTTP 404, got status " res6["status"] " (" res6["error"] ")`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 7: Phase 4 Invalid parameters rejection
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 7] Testing invalid parameters rejection...`n")
+    res7 := AgentExecute("get_system_info", '{"unexpected_param": "bad_input"}')
+    if (!res7["ok"] && res7["status"] == 422) {
+        Output("  PASS: Invalid parameters correctly rejected with HTTP 422 Unprocessable Content.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Expected HTTP 422, got status " res7["status"] " (" res7["error"] ")`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 8: Authenticated graceful shutdown
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 8] Testing authenticated shutdown...`n")
+    res8 := AgentShutdown()
+    if (res8["ok"] && res8["status"] == 200) {
         Output("  PASS: AgentShutdown accepted with HTTP 200.`n")
         passCount++
     } else {
-        Output("  FAIL: AgentShutdown failed with status " res5["status"] "`n")
+        Output("  FAIL: AgentShutdown failed with status " res8["status"] "`n")
         failCount++
     }
 

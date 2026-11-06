@@ -11,8 +11,9 @@ ShowCommandPalette() {
     palette.BackColor := "171A21"
     palette.SetFont("s10", "Segoe UI")
     palette.AddText("xm cFFFFFF", "What would you like to launch?")
-    palette.AddListBox("xm w390 r8 vCommandChoice", [
+    palette.AddListBox("xm w390 r9 vCommandChoice", [
         "Open Dashboard",
+        "System Information",
         "Ubuntu Server",
         "Coding Mode",
         "Study Mode",
@@ -37,6 +38,7 @@ RunPaletteChoice(palette) {
     palette.Destroy()
     switch choice {
         case "Open Dashboard": ShowDashboard()
+        case "System Information": ShowSystemInfoGui()
         case "Ubuntu Server": RunUbuntuServer()
         case "Coding Mode": SetMode("Coding")
         case "Study Mode": SetMode("Study")

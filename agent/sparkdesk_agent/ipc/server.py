@@ -6,9 +6,9 @@ import os
 import platform
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, List, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 import uvicorn
 
 from sparkdesk_agent.core.config import ALLOWED_LOOPBACK_HOSTS, AgentSettings, get_settings
@@ -19,7 +19,17 @@ from sparkdesk_agent.ipc.auth import (
     verify_token,
     write_token_file,
 )
-from sparkdesk_agent.ipc.protocol import HealthResponse
+from sparkdesk_agent.ipc.protocol import (
+    ExecuteRequest,
+    ExecuteResponse,
+    HealthResponse,
+    ToolMetadata,
+)
+from sparkdesk_agent.tools import (
+    ToolNotFoundError,
+    ToolValidationError,
+    registry,
+)
 
 _START_TIME: float = time.monotonic()
 
@@ -68,6 +78,8 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
     app.state.settings = settings
     app.state.server = None
 
+    logger = get_logger("sparkdesk_agent.server")
+
     @app.get(
         "/health",
         response_model=HealthResponse,
@@ -101,6 +113,57 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+    @app.get(
+        "/ipc/tools",
+        summary="List Registered Tools (Authenticated)",
+        tags=["Tools"],
+    )
+    async def list_tools(_: str = Depends(verify_token)) -> List[dict]:
+        """Return all allow-listed, registered agent tools and parameter schemas."""
+        return registry.list_tools()
+
+    @app.post(
+        "/ipc/execute",
+        response_model=ExecuteResponse,
+        summary="Execute Registered Tool (Authenticated)",
+        tags=["Tools"],
+    )
+    async def execute_tool(
+        request: ExecuteRequest,
+        _: str = Depends(verify_token),
+    ) -> ExecuteResponse:
+        """Safely execute an explicitly registered tool.
+
+        Validates tool existence and parameters.
+        Arbitrary command execution is strictly rejected.
+        """
+        logger.info("IPC Execute received for tool '%s'", request.tool)
+        try:
+            result = await registry.execute(request.tool, request.parameters)
+            return ExecuteResponse(
+                success=True,
+                tool=request.tool,
+                result=result,
+            )
+        except ToolNotFoundError as err:
+            logger.warning("Rejected execution of unlisted tool: %s", request.tool)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(err),
+            )
+        except ToolValidationError as err:
+            logger.warning("Rejected invalid parameters for tool '%s': %s", request.tool, err)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(err),
+            )
+        except Exception as err:
+            logger.error("Unhandled error executing tool '%s': %s", request.tool, err)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Execution error in tool '{request.tool}': {err}",
+            )
+
     @app.post(
         "/shutdown",
         summary="Protected Graceful Shutdown",
@@ -108,11 +171,9 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
     )
     async def trigger_shutdown(_: str = Depends(verify_token)) -> dict:
         """Gracefully request the local agent server to shut down (Authenticated)."""
-        logger = get_logger("sparkdesk_agent.server")
         logger.info("Graceful shutdown requested via authenticated /shutdown endpoint.")
 
         async def _initiate_shutdown() -> None:
-            # Yield control briefly so the HTTP 200 response is dispatched to the client
             await asyncio.sleep(0.15)
             server_inst = getattr(app.state, "server", None)
             if server_inst is not None:
@@ -148,7 +209,6 @@ def start_server(settings: Optional[AgentSettings] = None) -> None:
     if settings is None:
         settings = get_settings()
 
-    # Hard security check: enforce loopback only
     normalized_host = settings.host.strip().lower()
     if normalized_host not in ALLOWED_LOOPBACK_HOSTS:
         raise ValueError(
@@ -156,7 +216,6 @@ def start_server(settings: Optional[AgentSettings] = None) -> None:
             f"Allowed hosts: {sorted(ALLOWED_LOOPBACK_HOSTS)}"
         )
 
-    # Ensure centralized logging is initialized
     setup_logging(settings)
     logger = get_logger("sparkdesk_agent.server")
 
