@@ -25,6 +25,7 @@ try {
     InitCommandPalette()
     InitModes()
     InitClipboardTools()
+    InitAgentBridge()
     InitDashboard()
     BuildTrayMenu()
     LogInfo("SparkDesk started successfully.")
@@ -69,10 +70,19 @@ BuildTrayMenu() {
     A_TrayMenu.Add("Mode: Exam", (*) => SetMode("Exam"))
     A_TrayMenu.Add("Mode: Chill", (*) => SetMode("Chill"))
     A_TrayMenu.Add()
+    A_TrayMenu.Add("Test Agent Ping", (*) => PingAgentTrayHandler())
     A_TrayMenu.Add("Open data folder", (*) => Run(A_ScriptDir "\data"))
     A_TrayMenu.Add("Reload SparkDesk", (*) => Reload())
     A_TrayMenu.Add()
     A_TrayMenu.Add("Exit SparkDesk", (*) => ExitApp())
+}
+
+PingAgentTrayHandler() {
+    res := AgentPing()
+    if res["ok"]
+        TrayTip("Agent is connected (pong received).", "SparkDesk Agent")
+    else
+        TrayTip("Agent ping failed: " res["error"], "SparkDesk Agent", "Icon!")
 }
 
 #Include modules\CommandPalette.ahk
@@ -81,3 +91,4 @@ BuildTrayMenu() {
 #Include modules\UbuntuAutomation.ahk
 #Include modules\Dashboard.ahk
 #Include modules\Hotkeys.ahk
+#Include modules\AgentBridge.ahk

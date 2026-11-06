@@ -10,11 +10,16 @@ from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from sparkdesk_agent.core.config import AgentSettings
+from sparkdesk_agent.ipc.auth import (
+    TOKEN_HEADER_NAME,
+    generate_ephemeral_token,
+    get_active_token,
+)
 from sparkdesk_agent.ipc.server import create_app, start_server
 
 
 def test_health_endpoint() -> None:
-    """Verify that GET /health returns valid JSON with all required fields."""
+    """Verify that GET /health returns valid JSON with all required fields (unauthenticated)."""
     settings = AgentSettings(
         agent_name="Test SparkDesk Agent",
         agent_version="0.1.0",
@@ -38,39 +43,67 @@ def test_health_endpoint() -> None:
         assert data["environment"] == "development"
 
 
-def test_root_probe_endpoint() -> None:
-    """Verify that GET / returns service probe metadata."""
+def test_authenticated_ping_endpoint() -> None:
+    """Verify that GET /ipc/ping requires valid authentication."""
     settings = AgentSettings()
     app = create_app(settings)
 
     with TestClient(app) as client:
-        response = client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ready"
-        assert data["health_endpoint"] == "/health"
+        token = get_active_token()
+        assert token is not None
+
+        # 1. Valid token
+        res_ok = client.get("/ipc/ping", headers={TOKEN_HEADER_NAME: token})
+        assert res_ok.status_code == 200
+        data = res_ok.json()
+        assert data["status"] == "pong"
+        assert data["agent"] == settings.agent_name
+
+        # 2. Missing token
+        res_missing = client.get("/ipc/ping")
+        assert res_missing.status_code == 401
+
+        # 3. Invalid token
+        res_invalid = client.get("/ipc/ping", headers={TOKEN_HEADER_NAME: "wrong_secret"})
+        assert res_invalid.status_code == 401
 
 
-def test_shutdown_endpoint_contract() -> None:
-    """Verify that POST /shutdown responds with 200 and expected contract."""
+def test_protected_shutdown_endpoint() -> None:
+    """Verify that POST /shutdown requires valid authentication."""
     settings = AgentSettings()
     app = create_app(settings)
 
     with TestClient(app) as client:
-        response = client.post("/shutdown")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "shutting_down"
+        token = get_active_token()
+        assert token is not None
+
+        # 1. Missing token rejected
+        res_missing = client.post("/shutdown")
+        assert res_missing.status_code == 401
+
+        # 2. Invalid token rejected
+        res_bad = client.post("/shutdown", headers={TOKEN_HEADER_NAME: "invalid"})
+        assert res_bad.status_code == 401
+
+        # 3. Valid token accepted
+        res_ok = client.post("/shutdown", headers={TOKEN_HEADER_NAME: token})
+        assert res_ok.status_code == 200
+        assert res_ok.json()["status"] == "shutting_down"
 
 
 def test_lifespan_startup_and_shutdown() -> None:
-    """Verify that lifespan startup and shutdown context executes cleanly without errors."""
+    """Verify that lifespan startup provisions token and shutdown cleans up."""
     settings = AgentSettings()
+    token_file = settings.token_path or (settings.project_root / "data" / "session.token")
     app = create_app(settings)
 
     with TestClient(app) as client:
         resp = client.get("/health")
         assert resp.status_code == 200
+        assert token_file.is_file()
+
+    # After lifespan shutdown, token file should be removed
+    assert not token_file.exists()
 
 
 # =========================================================================
@@ -111,7 +144,6 @@ def test_reject_non_loopback_hosts_in_settings(invalid_host: str) -> None:
 def test_start_server_rejects_non_loopback() -> None:
     """Verify that start_server enforces loopback validation even if settings object is modified."""
     settings = AgentSettings()
-    # Bypass pydantic validation by assigning directly to __dict__
     settings.__dict__["host"] = "0.0.0.0"
 
     with pytest.raises(ValueError, match="Security violation"):

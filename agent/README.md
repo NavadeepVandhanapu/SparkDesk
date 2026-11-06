@@ -85,35 +85,43 @@ CLI Options:
 
 ---
 
-## Endpoints (Phase 2)
+## Endpoints (Phase 2 & 3)
 
 ### `GET /health`
-Returns the operational health, uptime, process ID, and Python runtime version.
+Returns the operational health, uptime, process ID, and Python runtime version (unauthenticated loopback probe).
 
-**Response Example:**
-```json
-{
-  "status": "ok",
-  "agent_name": "SparkDesk Local Agent",
-  "version": "0.1.0",
-  "python_version": "3.13.14",
-  "uptime_seconds": 12.34,
-  "pid": 30644,
-  "environment": "development",
-  "timestamp": "2026-11-06T14:19:02.150567+00:00"
-}
-```
+### `GET /ipc/ping`
+Authenticated IPC heartbeat endpoint used by AutoHotkey's `AgentBridge.ahk`. Requires `X-SparkDesk-Token` header.
+Returns: `{"status": "pong", "agent": "...", "version": "...", "timestamp": "..."}`.
+
+### `POST /shutdown`
+Protected graceful shutdown endpoint. Requires `X-SparkDesk-Token` header.
+Terminates the Uvicorn server, executes lifespan shutdown hooks, and cleans up the ephemeral session token file.
+
+---
+
+## Authentication & Security
+
+1. **Strict Loopback Binding**: The agent binds strictly to `127.0.0.1` and rejects any external host or wildcard IP at configuration, server startup, and CLI.
+2. **Ephemeral Session Tokens**: On startup, the agent generates a cryptographically secure 256-bit token (`secrets.token_urlsafe(32)`) and writes it to `data/session.token` with strict local file permissions.
+3. **Automatic Cleanup**: On shutdown, `data/session.token` is deleted immediately.
+4. **Zero-Log Policy**: The secret token is never logged to `sparkdesk.log`, stdout, or error reports.
 
 ---
 
 ## Running Tests
 
-Run the unit test suite:
+Run the full pytest suite (including Python endpoints and the AutoHotkey bridge end-to-end):
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_server.py -v
+.\.venv\Scripts\python.exe -m pytest tests -v
 ```
 
 Run the live server loopback verification:
 ```powershell
 .\.venv\Scripts\python.exe tests/verify_live_server.py
+```
+
+Run the AutoHotkey AgentBridge test suite directly:
+```powershell
+& "C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe" scripts/TestAgentBridge.ahk
 ```

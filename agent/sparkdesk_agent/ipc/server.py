@@ -1,17 +1,24 @@
 """FastAPI Application and Uvicorn Server for SparkDesk Local Agent."""
 
 import asyncio
+from datetime import datetime, timezone
 import os
 import platform
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI
 import uvicorn
 
 from sparkdesk_agent.core.config import ALLOWED_LOOPBACK_HOSTS, AgentSettings, get_settings
 from sparkdesk_agent.core.logging import get_logger, setup_logging
+from sparkdesk_agent.ipc.auth import (
+    generate_ephemeral_token,
+    remove_token_file,
+    verify_token,
+    write_token_file,
+)
 from sparkdesk_agent.ipc.protocol import HealthResponse
 
 _START_TIME: float = time.monotonic()
@@ -19,12 +26,17 @@ _START_TIME: float = time.monotonic()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Handle graceful startup and shutdown lifecycle events."""
+    """Handle graceful startup, token provisioning, and clean shutdown."""
     global _START_TIME
     _START_TIME = time.monotonic()
 
     settings: AgentSettings = getattr(app.state, "settings", get_settings())
     logger = get_logger("sparkdesk_agent.server")
+
+    # 1. Generate and write ephemeral auth token (never log the token value)
+    token = generate_ephemeral_token()
+    token_file = settings.token_path or (settings.project_root / "data" / "session.token")
+    write_token_file(token_file, token)
 
     logger.info(
         "SparkDesk Agent Server starting up on %s:%d (PID: %d)...",
@@ -38,6 +50,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("SparkDesk Agent Server shutting down cleanly...")
+        # 2. Invalidate and remove the ephemeral token file on shutdown
+        remove_token_file(token_file)
 
 
 def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
@@ -57,7 +71,7 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
     @app.get(
         "/health",
         response_model=HealthResponse,
-        summary="Agent Health Check",
+        summary="Agent Health Check (Unauthenticated loopback probe)",
         tags=["System"],
     )
     async def health_check() -> HealthResponse:
@@ -73,18 +87,32 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
             environment=settings.environment,
         )
 
+    @app.get(
+        "/ipc/ping",
+        summary="Authenticated IPC Ping",
+        tags=["IPC"],
+    )
+    async def ipc_ping(_: str = Depends(verify_token)) -> dict:
+        """Authenticated connectivity test for AutoHotkey AgentBridge."""
+        return {
+            "status": "pong",
+            "agent": settings.agent_name,
+            "version": settings.agent_version,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
     @app.post(
         "/shutdown",
-        summary="Graceful Shutdown",
+        summary="Protected Graceful Shutdown",
         tags=["System"],
     )
-    async def trigger_shutdown() -> dict:
-        """Gracefully request the local agent server to shut down."""
+    async def trigger_shutdown(_: str = Depends(verify_token)) -> dict:
+        """Gracefully request the local agent server to shut down (Authenticated)."""
         logger = get_logger("sparkdesk_agent.server")
-        logger.info("Graceful shutdown requested via /shutdown endpoint.")
+        logger.info("Graceful shutdown requested via authenticated /shutdown endpoint.")
 
         async def _initiate_shutdown() -> None:
-            # Yield control briefly so the HTTP response is dispatched to the client
+            # Yield control briefly so the HTTP 200 response is dispatched to the client
             await asyncio.sleep(0.15)
             server_inst = getattr(app.state, "server", None)
             if server_inst is not None:
@@ -134,7 +162,6 @@ def start_server(settings: Optional[AgentSettings] = None) -> None:
 
     app = create_app(settings)
 
-    # Convert settings log level to lowercase string for Uvicorn
     uvicorn_log_level = settings.log_level.lower()
     if uvicorn_log_level not in ("critical", "error", "warning", "info", "debug", "trace"):
         uvicorn_log_level = "info"

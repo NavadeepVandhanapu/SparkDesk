@@ -43,6 +43,7 @@ class AgentSettings(BaseSettings):
     project_root: Path = Field(default_factory=get_project_root)
     shared_config_path: Optional[Path] = None
     log_path: Optional[Path] = None
+    token_path: Optional[Path] = None
 
     # Shared settings loaded from config/settings.ini
     show_startup_notification: bool = True
@@ -66,6 +67,7 @@ class AgentSettings(BaseSettings):
         root = get_project_root()
         ini_path = root / "config" / "settings.ini"
         default_log_path = root / "data" / "sparkdesk.log"
+        default_token_path = root / "data" / "session.token"
 
         show_notification = True
         host = "127.0.0.1"
@@ -93,6 +95,7 @@ class AgentSettings(BaseSettings):
             project_root=root,
             shared_config_path=ini_path,
             log_path=default_log_path,
+            token_path=default_token_path,
             show_startup_notification=show_notification,
             host=host,
             port=port,

@@ -20,6 +20,7 @@ htmlcov/
 data/*.log
 data/*.token
 data/*.tmp
+data/*.txt
 !data/.gitkeep
 
 # IDE and OS metadata
