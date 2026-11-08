@@ -34,6 +34,7 @@ class AgentSettings(BaseSettings):
     agent_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = False
+    intelligence_provider: str = "rule_based"
 
     # Server / IPC Binding (Enforced loopback only)
     host: str = "127.0.0.1"

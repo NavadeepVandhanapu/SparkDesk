@@ -61,10 +61,29 @@ class IntentEngine:
         # Clear out-of-scope triggers for unsupported classification
         self._unsupported_triggers = [
             "weather", "music", "song", "video", "play", "order", "pizza", "food",
-            "search", "google", "browse", "email", "mail", "calc", "calculate",
+            "search", "google", "browse", "email", "mail", "calculate",
             "joke", "poem", "story", "who are you", "what is your name",
             "delete", "remove file", "format drive", "download",
         ]
+
+        # Application control regex patterns
+        self._close_confirmed_pattern = re.compile(
+            r"^(?:confirm|yes|force)\s+(?:close|kill|exit|terminate|stop)\s+(?:the\s+)?(?:app|application|program)?\s*(?P<app>[a-zA-Z0-9_\- ]+)$",
+            re.IGNORECASE,
+        )
+        self._close_app_pattern = re.compile(
+            r"^(?:close|kill|exit|terminate|stop)\s+(?:the\s+)?(?:app|application|program)?\s*(?P<app>[a-zA-Z0-9_\- ]+)$",
+            re.IGNORECASE,
+        )
+        self._open_app_pattern = re.compile(
+            r"^(?:open|launch|start|run)\s+(?:the\s+)?(?:app|application|program)?\s*(?P<app>[a-zA-Z0-9_\- ]+)$",
+            re.IGNORECASE,
+        )
+        self._is_running_pattern = re.compile(
+            r"^(?:is|check\s+if)\s+(?:the\s+)?(?P<app1>[a-zA-Z0-9_\- ]+?)\s*(?:is\s+)?(?:running|open|active|alive)\??$|"
+            r"^(?:status\s+of|process\s+status\s+of|check\s+process|check\s+app)\s+(?:the\s+)?(?:app|application|program)?\s*(?P<app2>[a-zA-Z0-9_\- ]+)$",
+            re.IGNORECASE,
+        )
 
     def _clean_text(self, text: str) -> str:
         """Normalize input text: lowercase, collapse whitespace, strip punctuation."""
@@ -72,6 +91,105 @@ class IntentEngine:
         # Remove common punctuation while preserving colons in drive letters (C:)
         cleaned = re.sub(r"[?!.,;\"'()\[\]{}]", " ", lowered)
         return " ".join(cleaned.split())
+
+    def _match_app_control(self, cleaned: str) -> Optional[IntentResult]:
+        """Attempt to classify prompt as an application control action."""
+        try:
+            from sparkdesk_agent.tools.app_control import resolve_application, ToolValidationError
+        except ImportError:
+            return None
+
+        # 1. Close application with explicit confirmation (e.g. "confirm close notepad", "force close chrome")
+        match = self._close_confirmed_pattern.match(cleaned)
+        if match:
+            app_raw = match.group("app").strip()
+            force = "force" in cleaned
+            try:
+                entry = resolve_application(app_raw)
+                return IntentResult(
+                    status=IntentStatus.RECOGNIZED,
+                    intent="close_app",
+                    tool="close_app",
+                    parameters={"app_name": entry["canonical_name"], "force": force, "confirmed": True},
+                    confidence=0.98,
+                    focus=entry["canonical_name"],
+                )
+            except ToolValidationError as err:
+                return IntentResult(
+                    status=IntentStatus.UNSUPPORTED,
+                    confidence=0.1,
+                    message=str(err),
+                )
+
+        # 2. Standard close application (unconfirmed by default)
+        match = self._close_app_pattern.match(cleaned)
+        if match:
+            app_raw = match.group("app").strip()
+            try:
+                entry = resolve_application(app_raw)
+                return IntentResult(
+                    status=IntentStatus.RECOGNIZED,
+                    intent="close_app",
+                    tool="close_app",
+                    parameters={"app_name": entry["canonical_name"], "force": False, "confirmed": False},
+                    confidence=0.95,
+                    focus=entry["canonical_name"],
+                )
+            except ToolValidationError as err:
+                return IntentResult(
+                    status=IntentStatus.UNSUPPORTED,
+                    confidence=0.1,
+                    message=str(err),
+                )
+
+        # 3. Check if application is running
+        match = self._is_running_pattern.match(cleaned)
+        if match:
+            app_raw = (match.group("app1") or match.group("app2") or "").strip()
+            if app_raw:
+                try:
+                    entry = resolve_application(app_raw)
+                    return IntentResult(
+                        status=IntentStatus.RECOGNIZED,
+                        intent="is_app_running",
+                        tool="is_app_running",
+                        parameters={"app_name": entry["canonical_name"]},
+                        confidence=0.95,
+                        focus=entry["canonical_name"],
+                    )
+                except ToolValidationError as err:
+                    # If user asked "status of cpu" or "check system", let it fall through
+                    if not any(token in app_raw for token in ("cpu", "ram", "memory", "disk", "uptime", "system", "pc")):
+                        return IntentResult(
+                            status=IntentStatus.UNSUPPORTED,
+                            confidence=0.1,
+                            message=str(err),
+                        )
+
+        # 4. Open application
+        match = self._open_app_pattern.match(cleaned)
+        if match:
+            app_raw = match.group("app").strip()
+            try:
+                entry = resolve_application(app_raw)
+                return IntentResult(
+                    status=IntentStatus.RECOGNIZED,
+                    intent="open_app",
+                    tool="open_app",
+                    parameters={"app_name": entry["canonical_name"]},
+                    confidence=0.95,
+                    focus=entry["canonical_name"],
+                )
+            except ToolValidationError as err:
+                # If user asked "open system specs", fall through to system info patterns
+                if not any(token in app_raw for token in ("system", "specs", "hardware", "diagnostic", "details")):
+                    return IntentResult(
+                        status=IntentStatus.UNSUPPORTED,
+                        confidence=0.1,
+                        message=str(err),
+                    )
+
+        return None
 
     def classify(self, raw_prompt: str) -> IntentResult:
         """Classify a natural language prompt into an IntentResult."""
@@ -120,6 +238,11 @@ class IntentEngine:
                     "• 'uptime' (how long the PC has been on)?"
                 ),
             )
+
+        # 3. Check for Application Control actions (open, check running, close)
+        app_result = self._match_app_control(cleaned)
+        if app_result is not None:
+            return app_result
 
         # 3. Check for specific metric patterns
         focus = "all"
@@ -209,7 +332,13 @@ class IntentEngine:
     def format_response(self, intent: IntentResult, tool_result: Dict[str, Any]) -> str:
         """Format raw tool execution output into a clear, human-readable response."""
         if not tool_result:
-            return "Unable to retrieve system metrics at this time."
+            return "Unable to complete request at this time."
+
+        # Application control tools provide structured human-readable messages
+        if intent.tool in ("open_app", "is_app_running", "close_app"):
+            if isinstance(tool_result, dict) and "message" in tool_result:
+                return tool_result["message"]
+            return "Application operation completed successfully."
 
         os_info = tool_result.get("os", {})
         cpu_info = tool_result.get("cpu", {})

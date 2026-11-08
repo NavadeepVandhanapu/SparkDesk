@@ -203,3 +203,4 @@ def test_command_pipeline_authentication_failure() -> None:
             json={"prompt": "show system specs"},
         )
         assert res_invalid.status_code == 401
+

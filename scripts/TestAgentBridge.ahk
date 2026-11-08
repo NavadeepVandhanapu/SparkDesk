@@ -82,6 +82,7 @@ RunTests() {
     ; Start the Python Agent Process
     ; --------------------------------------------------------------------------
     Output("[SETUP] Launching Python Local Agent...`n")
+    try FileDelete(SD["AgentTokenPath"])
     pythonExe := SD["Root"] "\agent\.venv\Scripts\python.exe"
     runAgent := SD["Root"] "\agent\run_agent.py"
 
@@ -234,24 +235,26 @@ RunTests() {
     ; --------------------------------------------------------------------------
     Output("[SCENARIO 11] Testing unsupported natural language query ('order a pizza')...`n")
     res11 := AgentProcessNaturalLanguage("order a pizza")
-    if (!res11["ok"] && res11["status"] == "unsupported") {
-        Output("  PASS: Unsupported command rejected safely with guidance message.`n`n")
+    if (!res11["ok"] && res11["status"] == "unsupported" && InStr(res11["message"], "•") && !InStr(res11["message"], "â€¢")) {
+        Output("  PASS: Unsupported command rejected safely with clean bullet guidance.`n`n")
         passCount++
     } else {
-        Output("  FAIL: Expected unsupported status, got " res11["status"] "`n`n")
+        Output("  FAIL: Expected unsupported status with clean bullets, got " res11["status"] "`n`n")
         failCount++
     }
 
     ; --------------------------------------------------------------------------
-    ; Scenario 12: Phase 5 Natural Language ambiguous query detection
+    ; Scenario 12: Phase 5 Natural Language ambiguous query detection & UTF-8 bullet rendering
     ; --------------------------------------------------------------------------
-    Output("[SCENARIO 12] Testing ambiguous query detection ('info')...`n")
+    Output("[SCENARIO 12] Testing ambiguous query detection ('info') & UTF-8 bullet rendering...`n")
     res12 := AgentProcessNaturalLanguage("info")
-    if (!res12["ok"] && res12["status"] == "ambiguous") {
-        Output("  PASS: Ambiguous query flagged with clarification prompt.`n`n")
+    hasBullet := InStr(res12["message"], "•")
+    hasMojibake := InStr(res12["message"], "â€¢") || InStr(res12["message"], "â¢")
+    if (!res12["ok"] && res12["status"] == "ambiguous" && hasBullet && !hasMojibake) {
+        Output("  PASS: Ambiguous query flagged with clean UTF-8 bullet formatting (no mojibake).`n`n")
         passCount++
     } else {
-        Output("  FAIL: Expected ambiguous status, got " res12["status"] "`n`n")
+        Output("  FAIL: Expected ambiguous status with clean bullets (hasBullet=" (hasBullet ? "YES" : "NO") ", hasMojibake=" (hasMojibake ? "YES" : "NO") "), got " res12["status"] "`n`n")
         failCount++
     }
 
@@ -265,6 +268,58 @@ RunTests() {
         passCount++
     } else {
         Output("  FAIL: Expected authentication error, got " res13["status"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 13b: Phase 7.1 Parameterized Tool Execution (is_app_running)
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 13b] Testing is_app_running tool via AgentExecute...`n")
+    res13b := AgentExecute("is_app_running", '{"app_name": "notepad"}')
+    if (res13b["ok"] && res13b["status"] == 200 && InStr(res13b["response"], "notepad")) {
+        Output("  PASS: is_app_running returned valid process check payload.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: is_app_running failed: " res13b["error"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 13c: Phase 7.1 Natural Language Application Control (Status Check)
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 13c] Testing Natural Language: 'is notepad running'...`n")
+    res13c := AgentProcessNaturalLanguage("is notepad running")
+    if (res13c["ok"] && res13c["tool"] == "is_app_running") {
+        Output("  PASS: Natural language process inspection succeeded.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: NL is_app_running failed: " res13c["message"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 13d: Phase 7.1 Application Control Close Confirmation Requirement
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 13d] Testing close_app confirmation requirement ('close notepad')...`n")
+    res13d := AgentProcessNaturalLanguage("close notepad")
+    if (res13d["ok"] && res13d["tool"] == "close_app") {
+        Output("  PASS: close_app correctly returned confirmation requirement.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: close_app failed: " res13d["message"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 13e: Phase 7.1 Critical Process Protection
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 13e] Testing Critical Process Protection ('close explorer')...`n")
+    res13e := AgentProcessNaturalLanguage("confirm close explorer")
+    if (!res13e["ok"] && (InStr(res13e["message"], "prohibited") || InStr(res13e["message"], "protected") || InStr(res13e["message"], "Security"))) {
+        Output("  PASS: Critical process termination attempt cleanly rejected.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Critical process was not rejected as expected: " res13e["message"] "`n`n")
         failCount++
     }
 

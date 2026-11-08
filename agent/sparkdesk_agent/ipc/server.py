@@ -9,10 +9,12 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import JSONResponse
 import uvicorn
 
 from sparkdesk_agent.core.config import ALLOWED_LOOPBACK_HOSTS, AgentSettings, get_settings
 from sparkdesk_agent.core.logging import get_logger, setup_logging
+from sparkdesk_agent.intelligence import pipeline
 from sparkdesk_agent.intent import (
     CommandRequest,
     CommandResponse,
@@ -71,6 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         remove_token_file(token_file)
 
 
+class UTF8JSONResponse(JSONResponse):
+    """Custom JSONResponse that explicitly advertises UTF-8 charset."""
+    media_type = "application/json; charset=utf-8"
+
+
 def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
     """Create and configure the FastAPI application instance."""
     if settings is None:
@@ -81,6 +88,7 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
         version=settings.agent_version,
         description="Local AI-powered PC Assistant Agent for SparkDesk",
         lifespan=lifespan,
+        default_response_class=UTF8JSONResponse,
     )
     app.state.settings = settings
     app.state.server = None
@@ -175,72 +183,70 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
         "/ipc/intent",
         response_model=IntentResult,
         summary="Classify Natural Language Intent (Authenticated)",
-        tags=["Intent"],
+        tags=["Intelligence"],
     )
     async def classify_intent(
         request: CommandRequest,
         _: str = Depends(verify_token),
     ) -> IntentResult:
-        """Analyze a natural-language prompt and return the recognized intent and mapped tool."""
-        logger.info("Classifying intent for prompt: '%s'", request.prompt[:60])
-        return intent_engine.classify(request.prompt)
+        """Analyze a natural-language prompt within session context and return recognized intent."""
+        return await pipeline.classify(request.prompt, request.session_id)
 
     @app.post(
         "/ipc/command",
         response_model=CommandResponse,
         summary="Natural Language Command Processing Pipeline (Authenticated)",
-        tags=["Intent"],
+        tags=["Intelligence"],
     )
     async def process_command(
         request: CommandRequest,
         _: str = Depends(verify_token),
     ) -> CommandResponse:
-        """Process a natural language command:
-        1. Classify intent.
-        2. If recognized, execute tool via ToolRegistry.
-        3. Format human-readable response.
-        4. If ambiguous or unsupported, return clear guidance safely.
+        """Process a natural language command through the complete intelligence pipeline:
+        1. Contextual Intent Understanding (IntelligenceProvider)
+        2. Task Planning (TaskPlanner)
+        3. Strict Plan Validation (PlanValidator against ToolRegistry)
+        4. Safe Tool Execution (ToolRegistry)
+        5. Response Formatting & Conversation Context Update
         """
-        now_ts = datetime.now(timezone.utc).isoformat()
-        intent = intent_engine.classify(request.prompt)
+        return await pipeline.process(request)
 
-        if intent.status == IntentStatus.RECOGNIZED:
-            logger.info("Recognized intent '%s' -> invoking tool '%s'", intent.intent, intent.tool)
-            try:
-                tool_output = await registry.execute(intent.tool, intent.parameters)
-                formatted_text = intent_engine.format_response(intent, tool_output)
-                return CommandResponse(
-                    success=True,
-                    status=intent.status.value,
-                    intent=intent.intent,
-                    tool=intent.tool,
-                    message=formatted_text,
-                    tool_result=tool_output,
-                    timestamp=now_ts,
-                )
-            except Exception as err:
-                logger.error("Execution error processing command '%s': %s", request.prompt, err)
-                return CommandResponse(
-                    success=False,
-                    status="execution_error",
-                    intent=intent.intent,
-                    tool=intent.tool,
-                    message=f"Error executing command: {err}",
-                    tool_result=None,
-                    timestamp=now_ts,
-                )
+    @app.get(
+        "/ipc/context",
+        summary="Get Conversation Context (Authenticated)",
+        tags=["Intelligence"],
+    )
+    async def get_context(
+        session_id: Optional[str] = None,
+        _: str = Depends(verify_token),
+    ) -> dict:
+        """Retrieve conversational history and topic focus for a session."""
+        ctx = pipeline.context_manager.get_or_create(session_id)
+        return {
+            "session_id": ctx.session_id,
+            "turns_count": len(ctx.turns),
+            "history": ctx.get_history(max_turns=10),
+            "last_tool": ctx.last_tool(),
+            "last_focus": ctx.last_focus(),
+            "updated_at": ctx.updated_at,
+        }
 
-        # Ambiguous or unsupported request
-        logger.info("Command status '%s' for prompt '%s'", intent.status.value, request.prompt[:60])
-        return CommandResponse(
-            success=False,
-            status=intent.status.value,
-            intent=None,
-            tool=None,
-            message=intent.message or "Unsupported command.",
-            tool_result=None,
-            timestamp=now_ts,
-        )
+    @app.delete(
+        "/ipc/context",
+        summary="Clear Conversation Context (Authenticated)",
+        tags=["Intelligence"],
+    )
+    async def clear_context(
+        session_id: Optional[str] = None,
+        _: str = Depends(verify_token),
+    ) -> dict:
+        """Clear conversation history for a session."""
+        sid = session_id or "default"
+        cleared = pipeline.context_manager.clear(sid)
+        return {
+            "session_id": sid,
+            "cleared": cleared,
+        }
 
     @app.post(
         "/shutdown",

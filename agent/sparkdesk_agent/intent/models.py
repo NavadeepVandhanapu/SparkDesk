@@ -28,6 +28,7 @@ class CommandRequest(BaseModel):
     """Payload for natural-language command submission."""
 
     prompt: str = Field(..., min_length=1, description="Natural-language prompt submitted by user")
+    session_id: Optional[str] = Field(default=None, description="Optional conversation session identifier")
 
 
 class CommandResponse(BaseModel):
@@ -40,3 +41,5 @@ class CommandResponse(BaseModel):
     message: str = Field(..., description="Human-readable response message")
     tool_result: Optional[Any] = Field(default=None, description="Raw tool execution output if successful")
     timestamp: str = Field(..., description="UTC timestamp of response generation")
+    session_id: Optional[str] = Field(default=None, description="Associated conversation session ID")
+    plan_id: Optional[str] = Field(default=None, description="Identifier of the generated task execution plan, if any")

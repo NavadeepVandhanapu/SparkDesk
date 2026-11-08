@@ -9,6 +9,7 @@ from sparkdesk_agent.tools.registry import (
 )
 # Ensure built-in tools are registered upon module import
 import sparkdesk_agent.tools.system_info
+import sparkdesk_agent.tools.app_control
 
 __all__ = [
     "registry",

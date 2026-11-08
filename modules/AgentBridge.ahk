@@ -64,6 +64,26 @@ GetAgentToken() {
 ; HTTP Request Transport via WinHttp.WinHttpRequest.5.1
 ; ------------------------------------------------------------------------------
 
+DecodeUtf8ResponseBody(http) {
+    try {
+        body := http.ResponseBody
+        stream := ComObject("ADODB.Stream")
+        stream.Type := 1 ; adTypeBinary
+        stream.Open()
+        stream.Write(body)
+        stream.Position := 0
+        stream.Type := 2 ; adTypeText
+        stream.Charset := "utf-8"
+        text := stream.ReadText()
+        stream.Close()
+        return (text != "") ? text : ""
+    } catch {
+        try return http.ResponseText
+        catch
+            return ""
+    }
+}
+
 SendAgentRequest(method, endpoint, payload := "", customToken := "", timeoutMs := 2000) {
     global SD
 
@@ -92,14 +112,14 @@ SendAgentRequest(method, endpoint, payload := "", customToken := "", timeoutMs :
             http.SetRequestHeader("X-SparkDesk-Token", token)
 
         if (payload != "") {
-            http.SetRequestHeader("Content-Type", "application/json")
+            http.SetRequestHeader("Content-Type", "application/json; charset=utf-8")
             http.Send(payload)
         } else {
             http.Send()
         }
 
         result["status"] := http.Status
-        result["response"] := http.ResponseText
+        result["response"] := DecodeUtf8ResponseBody(http)
         result["ok"] := (http.Status >= 200 && http.Status < 300)
 
         if (!result["ok"])
@@ -147,8 +167,35 @@ AgentShutdown(customToken := "") {
 ; Phase 4: Authenticated Tool Execution
 ; ------------------------------------------------------------------------------
 
+MapToJson(mapObj) {
+    if (!IsObject(mapObj) || Type(mapObj) != "Map")
+        return "{}"
+    json := "{"
+    first := true
+    for key, val in mapObj {
+        if (!first)
+            json .= ", "
+        first := false
+        json .= '"' key '": '
+        if (Type(val) == "String")
+            json .= '"' EscapeJsonString(val) '"'
+        else if (Type(val) == "Integer" || Type(val) == "Float")
+            json .= val
+        else if (val == true)
+            json .= "true"
+        else if (val == false)
+            json .= "false"
+        else
+            json .= '""'
+    }
+    json .= "}"
+    return json
+}
+
 AgentExecute(toolName, parameters := "", customToken := "", timeoutMs := 4000) {
-    if (parameters == "" || parameters == "{}" || Type(parameters) != "String")
+    if (Type(parameters) == "Map")
+        payload := '{"tool": "' toolName '", "parameters": ' MapToJson(parameters) '}'
+    else if (parameters == "" || parameters == "{}" || Type(parameters) != "String")
         payload := '{"tool": "' toolName '", "parameters": {}}'
     else
         payload := '{"tool": "' toolName '", "parameters": ' parameters '}'
@@ -236,12 +283,27 @@ AgentProcessNaturalLanguage(prompt, customToken := "") {
     }
 
     ; Execute the tool via /ipc/execute
-    execRes := AgentExecute(toolName, "", customToken)
+    toolParams := ""
+    if (intentData.Has("parameters") && IsObject(intentData["parameters"]))
+        toolParams := MapToJson(intentData["parameters"])
+
+    execRes := AgentExecute(toolName, toolParams, customToken)
     if (!execRes["ok"]) {
+        errDetail := ""
+        if (execRes.Has("response") && execRes["response"] != "") {
+            try {
+                respMap := SimpleJsonParse(execRes["response"])
+                if (respMap.Has("detail") && respMap["detail"] != "")
+                    errDetail := respMap["detail"]
+            }
+        }
+        if (errDetail == "")
+            errDetail := execRes["error"]
+
         return Map(
             "ok", false,
             "status", "execution_error",
-            "message", "Failed to execute tool '" toolName "': " execRes["error"],
+            "message", "Failed to execute tool '" toolName "': " errDetail,
             "tool", toolName,
             "data", Map()
         )
@@ -560,6 +622,29 @@ _JsonParseString(str, &pos) {
                 case "n": out .= "`n"
                 case "r": out .= "`r"
                 case "t": out .= "`t"
+                case "u":
+                    hexStr := SubStr(str, pos + 1, 4)
+                    if RegExMatch(hexStr, "^[0-9a-fA-F]{4}$") {
+                        codePoint := Integer("0x" hexStr)
+                        ; Handle UTF-16 surrogate pairs (e.g. \uD83D\uDE80 -> emoji)
+                        if (codePoint >= 0xD800 && codePoint <= 0xDBFF && SubStr(str, pos + 5, 2) = "\u") {
+                            lowHex := SubStr(str, pos + 7, 4)
+                            if RegExMatch(lowHex, "^[0-9a-fA-F]{4}$") {
+                                lowPoint := Integer("0x" lowHex)
+                                if (lowPoint >= 0xDC00 && lowPoint <= 0xDFFF) {
+                                    fullCodePoint := 0x10000 + ((codePoint - 0xD800) << 10) + (lowPoint - 0xDC00)
+                                    out .= Chr(fullCodePoint)
+                                    pos += 11
+                                    start := pos
+                                    continue
+                                }
+                            }
+                        }
+                        out .= Chr(codePoint)
+                        pos += 4
+                    } else {
+                        out .= nextChar
+                    }
                 default: out .= nextChar
             }
             pos++
