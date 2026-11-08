@@ -8,9 +8,11 @@
 7. Tests authenticated POST /ipc/execute with get_system_info -> 200 OK
 8. Tests authenticated POST /ipc/execute with unknown tool -> 404 Not Found
 9. Tests authenticated POST /ipc/execute with invalid parameters -> 422 Unprocessable Content
-10. Triggers authenticated graceful shutdown via POST http://127.0.0.1:8765/shutdown
-11. Verifies that the process exits cleanly with return code 0
-12. Verifies that data/session.token was cleaned up
+10. Tests authenticated POST /ipc/intent with recognized, ambiguous, and unsupported prompts
+11. Tests authenticated POST /ipc/command natural language processing pipeline
+12. Triggers authenticated graceful shutdown via POST http://127.0.0.1:8765/shutdown
+13. Verifies that the process exits cleanly with return code 0
+14. Verifies that data/session.token was cleaned up
 """
 
 import json
@@ -41,6 +43,8 @@ def test_live_server_authenticated_lifecycle() -> None:
     health_url = f"{base_url}/health"
     ping_url = f"{base_url}/ipc/ping"
     execute_url = f"{base_url}/ipc/execute"
+    intent_url = f"{base_url}/ipc/intent"
+    command_url = f"{base_url}/ipc/command"
     shutdown_url = f"{base_url}/shutdown"
     max_retries = 25
     health_data = None
@@ -70,9 +74,11 @@ def test_live_server_authenticated_lifecycle() -> None:
         print("[TEST] Ephemeral token file successfully verified on disk (length:", len(token), "chars)")
 
         with httpx.Client(timeout=4.0) as client:
+            headers = {"X-SparkDesk-Token": token}
+
             # Test 1: Authenticated GET /ipc/ping with valid token
             print("[TEST] Testing GET /ipc/ping with valid token...")
-            ping_resp = client.get(ping_url, headers={"X-SparkDesk-Token": token})
+            ping_resp = client.get(ping_url, headers=headers)
             assert ping_resp.status_code == 200, f"Expected 200, got {ping_resp.status_code}: {ping_resp.text}"
             assert ping_resp.json()["status"] == "pong"
             print("[TEST] Valid token accepted: pong received.")
@@ -89,11 +95,11 @@ def test_live_server_authenticated_lifecycle() -> None:
             assert no_token_resp.status_code == 401, f"Expected 401, got {no_token_resp.status_code}"
             print("[TEST] Missing token properly rejected with 401 Unauthorized.")
 
-            # Test 4: Phase 4 Tool Execution (get_system_info)
+            # Test 4: Tool Execution (get_system_info)
             print("[TEST] Testing POST /ipc/execute for get_system_info...")
             exec_resp = client.post(
                 execute_url,
-                headers={"X-SparkDesk-Token": token},
+                headers=headers,
                 json={"tool": "get_system_info", "parameters": {}},
             )
             assert exec_resp.status_code == 200, f"Expected 200, got {exec_resp.status_code}: {exec_resp.text}"
@@ -107,7 +113,7 @@ def test_live_server_authenticated_lifecycle() -> None:
             print("[TEST] Testing POST /ipc/execute with unknown tool...")
             unknown_resp = client.post(
                 execute_url,
-                headers={"X-SparkDesk-Token": token},
+                headers=headers,
                 json={"tool": "arbitrary_cmd_xyz", "parameters": {}},
             )
             assert unknown_resp.status_code == 404, f"Expected 404, got {unknown_resp.status_code}"
@@ -117,21 +123,41 @@ def test_live_server_authenticated_lifecycle() -> None:
             print("[TEST] Testing POST /ipc/execute with invalid parameters...")
             invalid_param_resp = client.post(
                 execute_url,
-                headers={"X-SparkDesk-Token": token},
+                headers=headers,
                 json={"tool": "get_system_info", "parameters": {"bad_arg": 123}},
             )
             assert invalid_param_resp.status_code == 422, f"Expected 422, got {invalid_param_resp.status_code}"
             print("[TEST] Invalid parameters correctly rejected with 422.")
 
-            # Test 7: Protected POST /shutdown with invalid token
+            # Test 7: Phase 5 POST /ipc/intent classification
+            print("[TEST] Testing POST /ipc/intent...")
+            intent_resp = client.post(intent_url, headers=headers, json={"prompt": "check my memory usage"})
+            assert intent_resp.status_code == 200
+            intent_data = intent_resp.json()
+            assert intent_data["status"] == "recognized"
+            assert intent_data["tool"] == "get_system_info"
+            assert intent_data["focus"] == "memory"
+            print("[TEST] Intent classification verified (focus: memory).")
+
+            # Test 8: Phase 5 POST /ipc/command full natural language pipeline
+            print("[TEST] Testing POST /ipc/command pipeline...")
+            cmd_resp = client.post(command_url, headers=headers, json={"prompt": "tell me my computer specs"})
+            assert cmd_resp.status_code == 200
+            cmd_data = cmd_resp.json()
+            assert cmd_data["success"] is True
+            assert cmd_data["status"] == "recognized"
+            assert "System Overview" in cmd_data["message"] or "Operating System" in cmd_data["message"]
+            print("[TEST] Natural language command pipeline executed successfully.")
+
+            # Test 9: Protected POST /shutdown with invalid token
             print("[TEST] Testing POST /shutdown with invalid token...")
             bad_shutdown = client.post(shutdown_url, headers={"X-SparkDesk-Token": "wrong_token"})
             assert bad_shutdown.status_code == 401, f"Expected 401, got {bad_shutdown.status_code}"
             print("[TEST] Unauthorized shutdown attempt rejected with 401.")
 
-            # Test 8: Protected POST /shutdown with valid token
+            # Test 10: Protected POST /shutdown with valid token
             print("[TEST] Sending authorized shutdown request...")
-            shutdown_resp = client.post(shutdown_url, headers={"X-SparkDesk-Token": token})
+            shutdown_resp = client.post(shutdown_url, headers=headers)
             assert shutdown_resp.status_code == 200, f"Shutdown request failed: {shutdown_resp.text}"
             print("[TEST] Authorized shutdown acknowledged.")
 

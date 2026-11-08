@@ -2,7 +2,7 @@
 #SingleInstance Force
 
 ; ==============================================================================
-; TestAgentBridge.ahk - Phase 3 & 4 Verification Suite
+; TestAgentBridge.ahk - Phases 3, 4 & 5 Verification Suite
 ; Tests:
 ; 1. Unavailable-server scenario
 ; 2. Authenticated communication (valid token -> 200 pong)
@@ -11,7 +11,13 @@
 ; 5. Phase 4: Authenticated Tool Execution (get_system_info -> 200 OK + metrics)
 ; 6. Phase 4: Unknown tool rejection (404 Not Found)
 ; 7. Phase 4: Invalid parameters rejection (422 Unprocessable Content)
-; 8. Clean authenticated shutdown (200 OK + clean exit)
+; 8. Phase 5: Natural Language general system info ("show my system specs")
+; 9. Phase 5: Natural Language RAM-specific ("how much ram is free")
+; 10. Phase 5: Natural Language CPU-specific ("what is my cpu usage")
+; 11. Phase 5: Natural Language unsupported command rejection ("order a pizza")
+; 12. Phase 5: Natural Language ambiguous request detection ("info")
+; 13. Phase 5: Natural Language invalid token authentication failure
+; 14. Clean authenticated shutdown (200 OK + clean exit)
 ; ==============================================================================
 
 rootDir := SubStr(A_ScriptDir, 1, InStr(A_ScriptDir, "\", , -1) - 1)
@@ -34,6 +40,7 @@ SD["AgentPort"] := 8765
 SD["AgentTokenPath"] := rootDir "\data\session.token"
 SD["AgentToken"] := ""
 SD["SysInfoGui"] := 0
+SD["AssistantGui"] := 0
 
 LogInfo(msg) {
     Output(FormatTime(, "yyyy-MM-dd HH:mm:ss") " [TEST] " msg "`n")
@@ -48,14 +55,14 @@ LogError(msg) {
 
 RunTests() {
     Output("=======================================================`n")
-    Output("Starting Phase 4 AutoHotkey AgentBridge Verification`n")
+    Output("Starting Phase 5 AutoHotkey AgentBridge Verification`n")
     Output("=======================================================`n`n")
 
     passCount := 0
     failCount := 0
 
     ; --------------------------------------------------------------------------
-    ; Scenario 1: Unavailable-server scenario (server is not running initially)
+    ; Scenario 1: Unavailable-server scenario
     ; --------------------------------------------------------------------------
     Output("[SCENARIO 1] Testing unavailable-server scenario...`n")
     SD["AgentPort"] := 59123
@@ -83,8 +90,8 @@ RunTests() {
 
     ; Wait for server readiness and session.token generation
     tokenFound := false
-    loop 20 {
-        Sleep(500)
+    loop 25 {
+        Sleep(400)
         if FileExist(SD["AgentTokenPath"]) {
             tokenFound := true
             break
@@ -107,7 +114,7 @@ RunTests() {
     Output("[SCENARIO 2] Testing authenticated communication (valid token)...`n")
     res2 := AgentPing()
     if (res2["ok"] && res2["status"] == 200 && InStr(res2["response"], "pong")) {
-        Output("  PASS: AgentPing returned HTTP 200 with pong payload.`n")
+        Output("  PASS: AgentPing returned HTTP 200 with pong payload.`n`n")
         passCount++
     } else {
         Output("  FAIL: AgentPing failed! Status: " res2["status"] " Error: " res2["error"] "`n`n")
@@ -136,47 +143,40 @@ RunTests() {
     passCount++
 
     ; --------------------------------------------------------------------------
-    ; Scenario 5: Phase 4 Tool Execution (get_system_info)
+    ; Scenario 5: Authenticated Tool Execution (get_system_info)
     ; --------------------------------------------------------------------------
     Output("[SCENARIO 5] Testing authenticated tool execution (get_system_info)...`n")
     res5 := AgentExecute("get_system_info")
     if (res5["ok"] && res5["status"] == 200) {
         data := res5["data"]
         resultMap := data.Has("result") ? data["result"] : Map()
-        memMap := resultMap.Has("memory") ? resultMap["memory"] : Map()
-        cpuMap := resultMap.Has("cpu") ? resultMap["cpu"] : Map()
-        osMap := resultMap.Has("os") ? resultMap["os"] : Map()
-
         if (resultMap.Has("memory") && resultMap.Has("cpu") && resultMap.Has("disk") && resultMap.Has("uptime")) {
-            Output("  PASS: get_system_info returned valid metrics structure.`n")
-            Output("  OS: " (osMap.Has("platform") ? osMap["platform"] : "Windows") "`n")
-            Output("  CPU: " (cpuMap.Has("logical_cores") ? cpuMap["logical_cores"] : 0) " cores, " (cpuMap.Has("usage_percent") ? cpuMap["usage_percent"] : 0) "% utilization`n")
-            Output("  Memory: " (memMap.Has("total_gb") ? memMap["total_gb"] : 0) " GB total, " (memMap.Has("available_gb") ? memMap["available_gb"] : 0) " GB available`n`n")
+            Output("  PASS: get_system_info returned valid metrics structure.`n`n")
             passCount++
         } else {
             Output("  FAIL: Metrics structure missing expected keys.`n`n")
             failCount++
         }
     } else {
-        Output("  FAIL: AgentExecute get_system_info failed with status " res5["status"] " Error: " res5["error"] "`n`n")
+        Output("  FAIL: AgentExecute get_system_info failed with status " res5["status"] "`n`n")
         failCount++
     }
 
     ; --------------------------------------------------------------------------
-    ; Scenario 6: Phase 4 Unknown tool rejection
+    ; Scenario 6: Unknown tool rejection
     ; --------------------------------------------------------------------------
-    Output("[SCENARIO 6] Testing unknown tool rejection (security check)...`n")
+    Output("[SCENARIO 6] Testing unknown tool rejection...`n")
     res6 := AgentExecute("malicious_arbitrary_cmd_xyz")
     if (!res6["ok"] && res6["status"] == 404) {
         Output("  PASS: Unknown tool correctly rejected with HTTP 404 Not Found.`n`n")
         passCount++
     } else {
-        Output("  FAIL: Expected HTTP 404, got status " res6["status"] " (" res6["error"] ")`n`n")
+        Output("  FAIL: Expected HTTP 404, got status " res6["status"] "`n`n")
         failCount++
     }
 
     ; --------------------------------------------------------------------------
-    ; Scenario 7: Phase 4 Invalid parameters rejection
+    ; Scenario 7: Invalid parameters rejection
     ; --------------------------------------------------------------------------
     Output("[SCENARIO 7] Testing invalid parameters rejection...`n")
     res7 := AgentExecute("get_system_info", '{"unexpected_param": "bad_input"}')
@@ -184,20 +184,100 @@ RunTests() {
         Output("  PASS: Invalid parameters correctly rejected with HTTP 422 Unprocessable Content.`n`n")
         passCount++
     } else {
-        Output("  FAIL: Expected HTTP 422, got status " res7["status"] " (" res7["error"] ")`n`n")
+        Output("  FAIL: Expected HTTP 422, got status " res7["status"] "`n`n")
         failCount++
     }
 
     ; --------------------------------------------------------------------------
-    ; Scenario 8: Authenticated graceful shutdown
+    ; Scenario 8: Phase 5 Natural Language general request ("show my system specs")
     ; --------------------------------------------------------------------------
-    Output("[SCENARIO 8] Testing authenticated shutdown...`n")
-    res8 := AgentShutdown()
-    if (res8["ok"] && res8["status"] == 200) {
+    Output("[SCENARIO 8] Testing Natural Language command: 'show my system specs'...`n")
+    res8 := AgentProcessNaturalLanguage("show my system specs")
+    if (res8["ok"] && res8["status"] == "recognized" && res8["tool"] == "get_system_info") {
+        Output("  PASS: Recognized intent, executed get_system_info via /ipc/execute.`n")
+        Output("  Response Preview: " SubStr(res8["message"], 1, 80) "...`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Natural language 'show my system specs' failed: " res8["message"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 9: Phase 5 Natural Language RAM request ("how much ram is free")
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 9] Testing Natural Language command: 'how much ram is free'...`n")
+    res9 := AgentProcessNaturalLanguage("how much ram is free")
+    if (res9["ok"] && res9["status"] == "recognized" && InStr(res9["message"], "Memory")) {
+        Output("  PASS: Correctly mapped to get_system_info with RAM focus.`n")
+        Output("  Response Preview: " SubStr(res9["message"], 1, 80) "...`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: RAM command failed: " res9["message"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 10: Phase 5 Natural Language CPU request ("what is my cpu usage")
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 10] Testing Natural Language command: 'what is my cpu usage'...`n")
+    res10 := AgentProcessNaturalLanguage("what is my cpu usage")
+    if (res10["ok"] && res10["status"] == "recognized" && InStr(res10["message"], "CPU")) {
+        Output("  PASS: Correctly mapped to get_system_info with CPU focus.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: CPU command failed: " res10["message"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 11: Phase 5 Natural Language unsupported query rejection
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 11] Testing unsupported natural language query ('order a pizza')...`n")
+    res11 := AgentProcessNaturalLanguage("order a pizza")
+    if (!res11["ok"] && res11["status"] == "unsupported") {
+        Output("  PASS: Unsupported command rejected safely with guidance message.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Expected unsupported status, got " res11["status"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 12: Phase 5 Natural Language ambiguous query detection
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 12] Testing ambiguous query detection ('info')...`n")
+    res12 := AgentProcessNaturalLanguage("info")
+    if (!res12["ok"] && res12["status"] == "ambiguous") {
+        Output("  PASS: Ambiguous query flagged with clarification prompt.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Expected ambiguous status, got " res12["status"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 13: Phase 5 Natural Language authentication failure
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 13] Testing Natural Language with invalid authentication...`n")
+    res13 := AgentProcessNaturalLanguage("show specs", "invalid_bad_token_000")
+    if (!res13["ok"] && res13["status"] == "error") {
+        Output("  PASS: Unauthenticated natural language query cleanly rejected.`n`n")
+        passCount++
+    } else {
+        Output("  FAIL: Expected authentication error, got " res13["status"] "`n`n")
+        failCount++
+    }
+
+    ; --------------------------------------------------------------------------
+    ; Scenario 14: Authenticated graceful shutdown
+    ; --------------------------------------------------------------------------
+    Output("[SCENARIO 14] Testing authenticated shutdown...`n")
+    res14 := AgentShutdown()
+    if (res14["ok"] && res14["status"] == 200) {
         Output("  PASS: AgentShutdown accepted with HTTP 200.`n")
         passCount++
     } else {
-        Output("  FAIL: AgentShutdown failed with status " res8["status"] "`n")
+        Output("  FAIL: AgentShutdown failed with status " res14["status"] "`n")
         failCount++
     }
 

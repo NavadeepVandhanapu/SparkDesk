@@ -189,3 +189,4 @@ def test_list_tools_endpoint() -> None:
         tools = response.json()
         tool_names = [t["name"] for t in tools]
         assert "get_system_info" in tool_names
+

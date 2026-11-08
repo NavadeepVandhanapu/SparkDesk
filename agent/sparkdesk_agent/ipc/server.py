@@ -13,6 +13,13 @@ import uvicorn
 
 from sparkdesk_agent.core.config import ALLOWED_LOOPBACK_HOSTS, AgentSettings, get_settings
 from sparkdesk_agent.core.logging import get_logger, setup_logging
+from sparkdesk_agent.intent import (
+    CommandRequest,
+    CommandResponse,
+    IntentResult,
+    IntentStatus,
+    intent_engine,
+)
 from sparkdesk_agent.ipc.auth import (
     generate_ephemeral_token,
     remove_token_file,
@@ -163,6 +170,77 @@ def create_app(settings: Optional[AgentSettings] = None) -> FastAPI:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Execution error in tool '{request.tool}': {err}",
             )
+
+    @app.post(
+        "/ipc/intent",
+        response_model=IntentResult,
+        summary="Classify Natural Language Intent (Authenticated)",
+        tags=["Intent"],
+    )
+    async def classify_intent(
+        request: CommandRequest,
+        _: str = Depends(verify_token),
+    ) -> IntentResult:
+        """Analyze a natural-language prompt and return the recognized intent and mapped tool."""
+        logger.info("Classifying intent for prompt: '%s'", request.prompt[:60])
+        return intent_engine.classify(request.prompt)
+
+    @app.post(
+        "/ipc/command",
+        response_model=CommandResponse,
+        summary="Natural Language Command Processing Pipeline (Authenticated)",
+        tags=["Intent"],
+    )
+    async def process_command(
+        request: CommandRequest,
+        _: str = Depends(verify_token),
+    ) -> CommandResponse:
+        """Process a natural language command:
+        1. Classify intent.
+        2. If recognized, execute tool via ToolRegistry.
+        3. Format human-readable response.
+        4. If ambiguous or unsupported, return clear guidance safely.
+        """
+        now_ts = datetime.now(timezone.utc).isoformat()
+        intent = intent_engine.classify(request.prompt)
+
+        if intent.status == IntentStatus.RECOGNIZED:
+            logger.info("Recognized intent '%s' -> invoking tool '%s'", intent.intent, intent.tool)
+            try:
+                tool_output = await registry.execute(intent.tool, intent.parameters)
+                formatted_text = intent_engine.format_response(intent, tool_output)
+                return CommandResponse(
+                    success=True,
+                    status=intent.status.value,
+                    intent=intent.intent,
+                    tool=intent.tool,
+                    message=formatted_text,
+                    tool_result=tool_output,
+                    timestamp=now_ts,
+                )
+            except Exception as err:
+                logger.error("Execution error processing command '%s': %s", request.prompt, err)
+                return CommandResponse(
+                    success=False,
+                    status="execution_error",
+                    intent=intent.intent,
+                    tool=intent.tool,
+                    message=f"Error executing command: {err}",
+                    tool_result=None,
+                    timestamp=now_ts,
+                )
+
+        # Ambiguous or unsupported request
+        logger.info("Command status '%s' for prompt '%s'", intent.status.value, request.prompt[:60])
+        return CommandResponse(
+            success=False,
+            status=intent.status.value,
+            intent=None,
+            tool=None,
+            message=intent.message or "Unsupported command.",
+            tool_result=None,
+            timestamp=now_ts,
+        )
 
     @app.post(
         "/shutdown",

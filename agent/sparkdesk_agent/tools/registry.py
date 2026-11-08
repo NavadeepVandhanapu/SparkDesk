@@ -134,3 +134,4 @@ class ToolRegistry:
 
 # Global registry singleton
 registry = ToolRegistry()
+

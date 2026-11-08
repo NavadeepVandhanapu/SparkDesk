@@ -1,10 +1,11 @@
 #Requires AutoHotkey v2.0
 
 ; ==============================================================================
-; SparkDesk AgentBridge (Phase 3 & 4)
+; SparkDesk AgentBridge (Phases 3, 4 & 5)
 ; Provides authenticated HTTP communication between AutoHotkey and the
 ; Python Local Agent via WinHttp.WinHttpRequest.5.1 on 127.0.0.1.
-; Includes Tool Execution (AgentExecute) and System Information GUI.
+; Includes Tool Execution (AgentExecute), System Info GUI, and
+; Natural Language Command Processing (AgentProcessNaturalLanguage).
 ; ==============================================================================
 
 InitAgentBridge() {
@@ -22,6 +23,8 @@ InitAgentBridge() {
         SD["AgentPID"] := 0
     if !SD.Has("SysInfoGui")
         SD["SysInfoGui"] := 0
+    if !SD.Has("AssistantGui")
+        SD["AssistantGui"] := 0
 
     ; Read optional overrides from config/settings.ini
     if FileExist(SD["ConfigPath"]) {
@@ -163,6 +166,155 @@ AgentExecute(toolName, parameters := "", customToken := "", timeoutMs := 4000) {
         LogError("AgentExecute '" toolName "': Failed (" result["error"] ")")
     }
     return result
+}
+
+; ------------------------------------------------------------------------------
+; Phase 5: Natural Language Command Understanding & Processing
+; ------------------------------------------------------------------------------
+
+EscapeJsonString(str) {
+    str := StrReplace(str, "\", "\\")
+    str := StrReplace(str, '"', '\"')
+    str := StrReplace(str, "`r", "\r")
+    str := StrReplace(str, "`n", "\n")
+    str := StrReplace(str, "`t", "\t")
+    return str
+}
+
+AgentParseIntent(prompt, customToken := "", timeoutMs := 3000) {
+    payload := '{"prompt": "' EscapeJsonString(prompt) '"}'
+    result := SendAgentRequest("POST", "/ipc/intent", payload, customToken, timeoutMs)
+    if (result["ok"]) {
+        try result["data"] := SimpleJsonParse(result["response"])
+        catch
+            result["data"] := Map()
+    }
+    return result
+}
+
+AgentProcessNaturalLanguage(prompt, customToken := "") {
+    ; Step 1: Query intent understanding from the Python Agent
+    intentRes := AgentParseIntent(prompt, customToken)
+    if (!intentRes["ok"]) {
+        errMsg := (intentRes["status"] == 401)
+            ? "Authentication error. The local agent rejected the session token."
+            : "Could not reach SparkDesk Local Agent. Ensure the agent is running."
+        return Map(
+            "ok", false,
+            "status", "error",
+            "message", errMsg,
+            "tool", "",
+            "data", Map()
+        )
+    }
+
+    intentData := intentRes.Has("data") ? intentRes["data"] : Map()
+    intentStatus := intentData.Has("status") ? intentData["status"] : "unsupported"
+
+    ; Step 2: Handle ambiguous and unsupported requests safely
+    if (intentStatus == "ambiguous" || intentStatus == "unsupported") {
+        msg := intentData.Has("message") ? intentData["message"] : "Command was not recognized."
+        return Map(
+            "ok", false,
+            "status", intentStatus,
+            "message", msg,
+            "tool", "",
+            "data", Map()
+        )
+    }
+
+    ; Step 3: Execute tool ONLY through the existing authenticated /ipc/execute endpoint!
+    toolName := intentData.Has("tool") ? intentData["tool"] : ""
+    if (toolName == "") {
+        return Map(
+            "ok", false,
+            "status", "error",
+            "message", "Intent recognized but no corresponding tool was mapped.",
+            "tool", "",
+            "data", Map()
+        )
+    }
+
+    ; Execute the tool via /ipc/execute
+    execRes := AgentExecute(toolName, "", customToken)
+    if (!execRes["ok"]) {
+        return Map(
+            "ok", false,
+            "status", "execution_error",
+            "message", "Failed to execute tool '" toolName "': " execRes["error"],
+            "tool", toolName,
+            "data", Map()
+        )
+    }
+
+    ; Step 4: Obtain human-readable response from the agent command pipeline
+    cmdPayload := '{"prompt": "' EscapeJsonString(prompt) '"}'
+    cmdRes := SendAgentRequest("POST", "/ipc/command", cmdPayload, customToken, 4000)
+    formattedMsg := ""
+
+    if (cmdRes["ok"]) {
+        try {
+            cmdData := SimpleJsonParse(cmdRes["response"])
+            if cmdData.Has("message")
+                formattedMsg := cmdData["message"]
+        }
+    }
+
+    if (formattedMsg == "")
+        formattedMsg := "Tool '" toolName "' executed successfully."
+
+    return Map(
+        "ok", true,
+        "status", "recognized",
+        "message", formattedMsg,
+        "tool", toolName,
+        "data", execRes["data"]
+    )
+}
+
+; ------------------------------------------------------------------------------
+; Assistant Natural Language Response GUI
+; ------------------------------------------------------------------------------
+
+ShowAssistantResponseGui(prompt, message, toolData := "") {
+    global SD
+
+    if IsObject(SD["AssistantGui"]) {
+        try SD["AssistantGui"].Destroy()
+    }
+
+    respGui := Gui("+AlwaysOnTop +Resize +MinSize560x360", "SparkDesk Assistant")
+    respGui.BackColor := "111318"
+    respGui.SetFont("s10", "Segoe UI")
+
+    ; Header
+    respGui.SetFont("s16 bold cF3F4F6", "Segoe UI")
+    respGui.AddText("x24 y18 w510 h28", "SparkDesk Assistant")
+
+    respGui.SetFont("s9 c9CA3AF", "Segoe UI")
+    respGui.AddText("x26 y48 w510 h20", "QUERY: " SubStr(prompt, 1, 60))
+
+    ; Output Box
+    respGui.SetFont("s10 cF9FAFB", "Segoe UI")
+    outputEdit := respGui.AddEdit("x24 y76 w512 h210 ReadOnly Background20242D", message)
+
+    ; Action Buttons
+    hasSysInfo := (IsObject(toolData) && toolData.Has("result") && toolData["result"].Has("memory"))
+
+    if (hasSysInfo) {
+        diagBtn := respGui.AddButton("x24 y300 w170 h30", "Open Diagnostics GUI")
+        diagBtn.OnEvent("Click", (*) => (respGui.Destroy(), ShowSystemInfoGui()))
+    }
+
+    copyBtn := respGui.AddButton(hasSysInfo ? "x204 y300 w130 h30" : "x24 y300 w130 h30", "Copy Response")
+    copyBtn.OnEvent("Click", (*) => (A_Clipboard := message, ToolTip("Response copied to clipboard!", 24, 24), SetTimer(() => ToolTip(), -1500)))
+
+    closeBtn := respGui.AddButton(hasSysInfo ? "x344 y300 w90 h30" : "x164 y300 w90 h30", "Close")
+    closeBtn.OnEvent("Click", (*) => respGui.Destroy())
+
+    respGui.OnEvent("Close", (*) => (SD["AssistantGui"] := 0))
+    SD["AssistantGui"] := respGui
+    respGui.Show("w560 h350 Center")
 }
 
 ; ------------------------------------------------------------------------------

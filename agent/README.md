@@ -85,7 +85,7 @@ CLI Options:
 
 ---
 
-## Endpoints (Phase 2, 3 & 4)
+## Endpoints (Phase 2, 3, 4 & 5)
 
 ### `GET /health`
 Returns the operational health, uptime, process ID, and Python runtime version (unauthenticated loopback probe).
@@ -101,6 +101,16 @@ Authenticated endpoint listing all explicitly registered, allow-listed tools and
 Authenticated tool execution endpoint. Requires `X-SparkDesk-Token` header.
 Payload: `{"tool": "get_system_info", "parameters": {}}`.
 Executes explicitly registered tools (e.g. `get_system_info`) and returns structured JSON metrics. Rejects unlisted tools (404) and invalid parameters (422).
+
+### `POST /ipc/intent`
+Authenticated natural language intent classification endpoint. Requires `X-SparkDesk-Token` header.
+Payload: `{"prompt": "how much ram is free"}`.
+Classifies prompt into `recognized`, `ambiguous`, or `unsupported`, mapping to allow-listed tools.
+
+### `POST /ipc/command`
+Authenticated end-to-end natural language command pipeline. Requires `X-SparkDesk-Token` header.
+Payload: `{"prompt": "show my system specs"}`.
+Classifies intent, executes mapped tool via ToolRegistry, formats a clear human-readable response, and returns both formatted text and structured metrics.
 
 ### `POST /shutdown`
 Protected graceful shutdown endpoint. Requires `X-SparkDesk-Token` header.
